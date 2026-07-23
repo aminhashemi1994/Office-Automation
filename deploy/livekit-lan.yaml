@@ -1,0 +1,25 @@
+# کانفیگ LiveKit برای اجرا در شبکهٔ داخلی (بدون نیاز به اینترنت)
+# اجرا:  livekit-server --config deploy/livekit-lan.yaml --bind 0.0.0.0
+#
+# مقادیر کلید باید با .env سامانه یکی باشند (LIVEKIT_API_KEY / LIVEKIT_API_SECRET).
+# برای تولیدِ کلید امن:  livekit-server generate-keys
+
+port: 7880
+
+rtc:
+  # تک‌پورت UDP (mux): کاندیدهای ICE کمتر و اتصالِ سریع‌تر/پایدارتر نسبت به بازهٔ پورت.
+  udp_port: 7882
+  tcp_port: 7881
+  # مهم برای شبکهٔ داخلی: از IP داخلی استفاده کن، نه STUN اینترنتی.
+  use_external_ip: false
+
+# کلیدهای API اینجا نوشته نمی‌شوند!
+# منبع واحدِ کلید، فایل .env است (LIVEKIT_API_KEY / LIVEKIT_API_SECRET) که Node
+# هنگام اجرا از طریق متغیر محیطیِ LIVEKIT_KEYS به این سرور تزریق می‌کند.
+# فقط اگر LiveKit را کاملاً دستی و بدون Node اجرا کنی، این بخش را از حالت کامنت
+# دربیاور و کلید را همان‌جا بگذار:
+#   keys:
+#     <API_KEY>: <API_SECRET>
+
+logging:
+  level: info

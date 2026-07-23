@@ -1,0 +1,52 @@
+# کانفیگ nginx برای سامانه اتوماسیون
+# دامنه و مسیر گواهی را مطابق سرور خود تغییر دهید.
+#
+# نکته مهم: برای تماس صوتی/تصویری (WebRTC) مرورگرها فقط روی HTTPS (یا localhost)
+# اجازه دسترسی به دوربین/میکروفون می‌دهند — پس در استقرار نهایی حتماً HTTPS فعال باشد.
+# در شبکه داخلی می‌توانید با گواهی self-signed یا CA داخلی سازمان این کار را انجام دهید.
+
+# ریدایرکت HTTP به HTTPS
+server {
+    listen 80;
+    server_name automation.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name automation.example.com;
+
+    ssl_certificate     /etc/nginx/ssl/automation.crt;
+    ssl_certificate_key /etc/nginx/ssl/automation.key;
+
+    # سقف حجم آپلود فایل — با limits بک‌اند (۱۰۰ مگابایت) هماهنگ است
+    client_max_body_size 100m;
+
+    # فایل‌های استاتیک فرانت‌اند را می‌توان مستقیم از nginx سرو کرد (اختیاری، سریع‌تر):
+    # location /assets/ {
+    #     alias /path/to/tooscable-automation/client/dist/assets/;
+    #     expires 30d;
+    # }
+    # location /fonts/ {
+    #     alias /path/to/tooscable-automation/client/dist/fonts/;
+    #     expires 365d;
+    # }
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        # لازم برای Socket.IO (وب‌سوکت — چت، اعلان لحظه‌ای، سیگنالینگ تماس)
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # اتصال وب‌سوکت طولانی قطع نشود
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+}

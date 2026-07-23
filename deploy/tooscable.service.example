@@ -1,0 +1,19 @@
+# سرویس systemd — در /etc/systemd/system/tooscable.service کپی کنید
+# سپس: systemctl daemon-reload && systemctl enable --now tooscable
+
+[Unit]
+Description=Tooscable Office Automation
+After=network.target
+
+[Service]
+WorkingDirectory=/path/to/tooscable-automation
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=3
+# تنظیمات از فایل .env در ریشه پروژه خوانده می‌شود (HOST, PORT, DB_NAME, DATA_DIR)
+# در صورت نیاز می‌توانید اینجا هم override کنید:
+# Environment=HOST=127.0.0.1
+# Environment=DB_NAME=tooscable
+
+[Install]
+WantedBy=multi-user.target
