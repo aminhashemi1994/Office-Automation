@@ -89,6 +89,11 @@ function resolveSpec(spec, requester, requesterId) {
     if (mgrs.length) return mgrs;
     return db.prepare('SELECT id FROM users WHERE department_id = ? AND is_active = 1').all(spec.approver_id).map(u => u.id);
   }
+  // عضو یک تیم/واحد: هر یک از اعضای فعالِ آن واحد می‌تواند به‌عنوان جایگزین اقدام کند (جز خودِ درخواست‌دهنده)
+  if (spec.approver_type === 'dept_member' && spec.approver_id) {
+    return db.prepare('SELECT id FROM users WHERE department_id = ? AND is_active = 1').all(spec.approver_id)
+      .map(u => u.id).filter(id => id !== requesterId);
+  }
   if (spec.approver_type === 'role' && spec.approver_role) {
     return db.prepare('SELECT id FROM users WHERE role = ? AND is_active = 1').all(spec.approver_role).map(u => u.id);
   }
@@ -129,6 +134,10 @@ function describeApprover(step) {
   if (step.approver_type === 'dept_manager' && step.approver_id) {
     const d = db.prepare('SELECT name FROM departments WHERE id = ?').get(step.approver_id);
     return d ? `مدیر واحد ${d.name}` : 'مدیر واحد (نامشخص)';
+  }
+  if (step.approver_type === 'dept_member' && step.approver_id) {
+    const d = db.prepare('SELECT name FROM departments WHERE id = ?').get(step.approver_id);
+    return d ? `عضو تیم ${d.name}` : 'عضو تیم (نامشخص)';
   }
   if (step.approver_type === 'role' && step.approver_role) {
     return step.approver_role === 'admin' ? 'مدیران سامانه' : 'سرگروه‌ها/مدیران';

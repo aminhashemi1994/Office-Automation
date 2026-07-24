@@ -44,7 +44,11 @@ export default function Departments() {
             {d.description && <p style={{ fontSize: 12.8, color: 'var(--text-2)', marginBottom: 10 }}>{d.description}</p>}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {!!d.is_management && <span className="badge badge-red">واحد مدیریت</span>}
-              <span className="badge badge-amber"><Crown size={12} /> {d.manager_name || 'بدون سرگروه'}</span>
+              {(d.managers && d.managers.length)
+                ? d.managers.map(m => (
+                  <span key={m.id} className="badge badge-amber"><Crown size={12} /> {m.full_name}</span>
+                ))
+                : <span className="badge badge-amber"><Crown size={12} /> بدون سرگروه</span>}
               <span className="badge badge-gray">{fa(d.member_count)} عضو</span>
             </div>
           </div>

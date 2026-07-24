@@ -8,6 +8,7 @@ import { fa } from '../utils.js';
 const APPROVER_TYPES = {
   requester_manager: 'سرگروه واحدِ درخواست‌دهنده',
   dept_manager: 'مدیر یک واحد مشخص',
+  dept_member: 'عضو یک تیم/واحد (هر یک از اعضا)',
   user: 'کاربر مشخص',
   role: 'همه کاربران با نقش مشخص',
 };
@@ -117,16 +118,16 @@ export default function Workflows() {
 // ویرایشگر یک «قاعدهٔ تاییدکننده» (نوع + هدف) — برای قاعدهٔ اصلی و جایگزین‌ها استفاده می‌شود.
 // وقتی نوع، هدف نمی‌خواهد (سرگروه واحد درخواست‌دهنده)، فقط یک منوی تمام‌عرض نشان می‌دهد.
 function ApproverSpecEditor({ spec, onChange, departments, users }) {
-  const needsTarget = spec.approver_type === 'dept_manager' || spec.approver_type === 'user' || spec.approver_type === 'role';
+  const needsTarget = spec.approver_type === 'dept_manager' || spec.approver_type === 'dept_member' || spec.approver_type === 'user' || spec.approver_type === 'role';
   return (
     <div style={{ display: 'grid', gridTemplateColumns: needsTarget ? '1fr 1fr' : '1fr', gap: 8 }}>
       <select className="input" value={spec.approver_type}
         onChange={e => onChange({ approver_type: e.target.value, approver_id: null, approver_role: e.target.value === 'role' ? 'manager' : null })}>
         {Object.entries(APPROVER_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
       </select>
-      {spec.approver_type === 'dept_manager' && (
+      {(spec.approver_type === 'dept_manager' || spec.approver_type === 'dept_member') && (
         <select className="input" value={spec.approver_id || ''} onChange={e => onChange({ approver_id: Number(e.target.value) || null })}>
-          <option value="">— انتخاب واحد —</option>
+          <option value="">— انتخاب {spec.approver_type === 'dept_member' ? 'تیم/واحد' : 'واحد'} —</option>
           {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
       )}
@@ -161,6 +162,14 @@ function TemplateModal({ tpl, onClose, onDone }) {
       if (!d) return '⚠️ واحدی انتخاب نشده';
       const mgr = users.find(x => x.id === d.manager_id);
       return mgr ? `${d.name} ← ${mgr.full_name}` : `${d.name} ⚠️ (این واحد مدیر تعیین‌شده ندارد)`;
+    }
+    if (s.approver_type === 'dept_member') {
+      const d = departments.find(x => x.id === Number(s.approver_id));
+      if (!d) return '⚠️ تیمی انتخاب نشده';
+      const members = users.filter(x => x.department_id === d.id);
+      return members.length
+        ? `اعضای تیم ${d.name}: ${members.map(x => x.full_name).join('، ')}`
+        : `${d.name} ⚠️ (این تیم عضوی ندارد)`;
     }
     if (s.approver_type === 'role') {
       const list = users.filter(x => x.role === s.approver_role);
@@ -213,7 +222,13 @@ function TemplateModal({ tpl, onClose, onDone }) {
     for (const s of steps) {
       if (!s.title.trim()) return toast('عنوان همه مراحل الزامی است', 'error');
       if (s.approver_type === 'dept_manager' && !s.approver_id) return toast('برای مرحله «مدیر واحد» باید واحد را انتخاب کنید', 'error');
+      if (s.approver_type === 'dept_member' && !s.approver_id) return toast('برای مرحله «عضو تیم» باید تیم/واحد را انتخاب کنید', 'error');
       if (s.approver_type === 'user' && !s.approver_id) return toast('برای مرحله «کاربر مشخص» باید کاربر را انتخاب کنید', 'error');
+      for (const a of (s.alt_approvers || [])) {
+        if (a.approver_type === 'dept_manager' && !a.approver_id) return toast('برای جایگزین «مدیر واحد» باید واحد را انتخاب کنید', 'error');
+        if (a.approver_type === 'dept_member' && !a.approver_id) return toast('برای جایگزین «عضو تیم» باید تیم/واحد را انتخاب کنید', 'error');
+        if (a.approver_type === 'user' && !a.approver_id) return toast('برای جایگزین «کاربر مشخص» باید کاربر را انتخاب کنید', 'error');
+      }
     }
     for (const f of fields) {
       if (!f.key?.trim() || !f.label?.trim()) return toast('کلید و برچسب همه فیلدهای فرم الزامی است', 'error');

@@ -113,7 +113,12 @@ export function UserPicker({ value, onChange, exclude = [], multi = false, users
             <input ref={inputRef} className="input" value={q} onChange={e => setQ(e.target.value)}
               placeholder="جستجوی نام، واحد یا سمت…" style={{ paddingRight: 32 }} />
           </div>
-          <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+          <div className="userpicker-list" style={{ maxHeight: 'min(420px, 60vh)', overflowY: 'auto' }}>
+            {filtered.length > 0 && (
+              <div style={{ padding: '6px 12px', fontSize: 11.5, color: 'var(--text-3)', background: 'var(--surface)', position: 'sticky', top: 0, borderBottom: '1px solid var(--border-soft)' }}>
+                {filtered.length.toLocaleString('fa-IR')} کاربر{filtered.length > 6 ? ' — برای دیدن بقیه اسکرول کنید' : ''}
+              </div>
+            )}
             {!multi && (
               <button type="button" className="userpicker-item" onClick={() => { onChange(null); setOpen(false); }}
                 style={{ display: 'block', width: '100%', textAlign: 'right', padding: '9px 12px', background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: 13 }}>
