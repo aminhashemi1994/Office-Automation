@@ -148,6 +148,113 @@ export function UserPicker({ value, onChange, exclude = [], multi = false, users
   );
 }
 
+// انتخابگر کاربرِ «درجا» (inline) — بدون دراپ‌داون. یک کادر جستجو + فهرست همیشه‌باز
+// با آواتار و وضعیت آنلاین. برای شروع گفتگو/افزودن عضو مناسب است (UX بهتر از دراپ‌داون).
+// تک‌انتخابی: کلیک روی کاربر انتخابش می‌کند (و اگر onPick بدهی، بلافاصله اقدام می‌کند).
+// چندانتخابی: چیپ‌های انتخاب‌شده بالای فهرست + تیکِ کنارِ هر ردیف.
+export function UserListPicker({ value, onChange, exclude = [], multi = false, users: usersProp, onPick, height = 'min(52vh, 440px)', autoFocus = true }) {
+  const { users, onlineIds } = useStore();
+  const list = (usersProp || users).filter(u => u.is_active && !exclude.includes(u.id));
+  const [q, setQ] = useState('');
+  const inputRef = useRef(null);
+
+  useEffect(() => { if (autoFocus) setTimeout(() => inputRef.current?.focus(), 40); }, [autoFocus]);
+
+  const norm = (s) => String(s || '').toLowerCase();
+  const nq = norm(q);
+  const filtered = list.filter(u => !nq
+    || norm(u.full_name).includes(nq)
+    || norm(u.username).includes(nq)
+    || norm(u.department_name).includes(nq)
+    || norm(u.position).includes(nq));
+  // آنلاین‌ها اول، سپس بر اساس نام
+  const sorted = [...filtered].sort((a, b) => {
+    const oa = onlineIds?.has(a.id) ? 0 : 1, ob = onlineIds?.has(b.id) ? 0 : 1;
+    return oa !== ob ? oa - ob : String(a.full_name).localeCompare(String(b.full_name), 'fa');
+  });
+
+  const selectedIds = multi ? (Array.isArray(value) ? value : []) : (value != null ? [value] : []);
+  const byId = (id) => list.find(u => u.id === id);
+  const pick = (id) => {
+    if (multi) {
+      const has = selectedIds.includes(id);
+      onChange(has ? selectedIds.filter(x => x !== id) : [...selectedIds, id]);
+    } else {
+      onChange(id);
+      onPick?.(id);
+    }
+  };
+
+  return (
+    <div className="userlist-picker">
+      {/* چیپ‌های انتخاب‌شده (چندانتخابی) */}
+      {multi && selectedIds.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+          {selectedIds.map(id => (
+            <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'var(--primary-soft)', color: 'var(--primary)', borderRadius: 999, padding: '4px 6px 4px 10px', fontSize: 12.5, fontWeight: 600 }}>
+              <Avatar name={byId(id)?.full_name} color={byId(id)?.avatar_color} size={20} avatar={byId(id)?.avatar_path} />
+              {byId(id)?.full_name || '—'}
+              <X size={13} style={{ cursor: 'pointer' }} onClick={() => pick(id)} />
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* کادر جستجو */}
+      <div style={{ position: 'relative', marginBottom: 10 }}>
+        <Search size={17} style={{ position: 'absolute', right: 13, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
+        <input ref={inputRef} className="input" value={q} onChange={e => setQ(e.target.value)}
+          placeholder="جستجوی نام، واحد یا سمت…" style={{ paddingRight: 40, height: 46, fontSize: 14 }} />
+        {q && (
+          <button type="button" onClick={() => setQ('')}
+            style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', display: 'flex' }}>
+            <X size={16} />
+          </button>
+        )}
+      </div>
+
+      {/* فهرست کاربران */}
+      <div className="userlist-scroll" style={{ height, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface)' }}>
+        {sorted.length === 0 && (
+          <div style={{ padding: '32px 12px', textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>
+            کاربری با این مشخصات پیدا نشد
+          </div>
+        )}
+        {sorted.map(u => {
+          const on = selectedIds.includes(u.id);
+          const online = onlineIds?.has(u.id);
+          return (
+            <button key={u.id} type="button" onClick={() => pick(u.id)}
+              style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'right',
+                padding: '10px 14px', background: on ? 'var(--primary-soft)' : 'transparent', border: 'none',
+                borderBottom: '1px solid var(--border-soft)', cursor: 'pointer' }}>
+              <Avatar name={u.full_name} color={u.avatar_color} size={40} avatar={u.avatar_path} showStatus userId={u.id} />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: on ? 'var(--primary)' : 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {u.full_name}
+                </span>
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {[u.department_name, u.position].filter(Boolean).join(' · ') || (online ? 'آنلاین' : 'آفلاین')}
+                </span>
+              </span>
+              <span style={{ flexShrink: 0, width: 24, height: 24, borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                border: on ? 'none' : '1.5px solid var(--border)', background: on ? 'var(--primary)' : 'transparent' }}>
+                {on && <Check size={15} style={{ color: '#fff' }} />}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {multi && (
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
+          {selectedIds.length > 0 ? `${selectedIds.length.toLocaleString('fa-IR')} نفر انتخاب شده` : 'برای انتخاب روی افراد بزنید'}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Toasts() {
   const { toasts } = useStore();
   return (

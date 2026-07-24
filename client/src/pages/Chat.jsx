@@ -7,7 +7,7 @@ import {
 import { api, fileUrl } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtTime, fmtRelative, fmtSize } from '../utils.js';
-import { Avatar, Modal, Field, UserPicker } from '../components/common.jsx';
+import { Avatar, Modal, Field, UserPicker, UserListPicker } from '../components/common.jsx';
 
 const CONV_LABEL = { dm: '', group: 'گروه', channel: 'کانال' };
 
@@ -459,12 +459,13 @@ function NewChatModal({ type, onClose, onCreate }) {
             <input className="input" value={name} onChange={e => setName(e.target.value)} autoFocus />
           </Field>
           <Field label={isChannel ? 'اعضا (دریافت‌کنندگان)' : 'اعضا'}>
-            <UserPicker multi value={members} onChange={setMembers} exclude={[user.id]} />
+            <UserListPicker multi value={members} onChange={setMembers} exclude={[user.id]} autoFocus={false} />
           </Field>
         </>
       ) : (
-        <Field label="مخاطب">
-          <UserPicker value={dmTarget} onChange={setDmTarget} exclude={[user.id]} />
+        <Field label="مخاطب را انتخاب کنید">
+          <UserListPicker value={dmTarget} onChange={setDmTarget} exclude={[user.id]}
+            onPick={(id) => onCreate({ type, name: '', member_ids: [id] })} />
         </Field>
       )}
     </Modal>
@@ -486,7 +487,7 @@ function AddMembersModal({ conv, onClose, onDone }) {
           } catch (e) { toast(e.message, 'error'); }
         }}>افزودن</button>
       </>}>
-      <UserPicker multi value={members} onChange={setMembers} exclude={existing} />
+      <UserListPicker multi value={members} onChange={setMembers} exclude={existing} />
     </Modal>
   );
 }
