@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Printer, Search, FileText } from 'lucide-react';
+import { Printer, Search, FileText, Paperclip } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtDateTime, fmtDate, fa, printReport } from '../utils.js';
@@ -115,7 +115,16 @@ export default function Reports() {
                 return (
                   <tr key={r.id}>
                     <td>{fa(r.id)}</td>
-                    <td><Link to={`/cartable/${r.id}`} style={{ fontWeight: 600, color: 'var(--primary)' }}>{r.title}</Link></td>
+                    <td>
+                      <Link to={`/cartable/${r.id}`} style={{ fontWeight: 600, color: 'var(--primary)' }}>{r.title}</Link>
+                      {/* [پیوست‌ها] نشانِ «این درخواست فایل پیوست دارد» */}
+                      {r.attachments_count > 0 && (
+                        <span className="badge badge-sky" style={{ marginRight: 6 }}
+                          title={`${fa(r.attachments_count)} فایل پیوست دارد`}>
+                          <Paperclip size={11} /> {fa(r.attachments_count)}
+                        </span>
+                      )}
+                    </td>
                     <td>{r.template_name}</td>
                     <td>{r.requester_name}</td>
                     <td>{r.requester_department || '—'}</td>

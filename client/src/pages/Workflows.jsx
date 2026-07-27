@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Pencil, ArrowUp, ArrowDown, Trash2, Clock, Search, Image as ImageIcon, X } from 'lucide-react';
-import { api, uploadWorkflowImage, workflowFileUrl } from '../api.js';
+import { Plus, Pencil, ArrowUp, ArrowDown, Trash2, Clock, Search, Paperclip } from 'lucide-react';
+import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { Modal, Field, UserPicker, Segmented } from '../components/common.jsx';
+import { AttachmentPicker } from '../components/Attachments.jsx';
 import { fa } from '../utils.js';
 
 const APPROVER_TYPES = {
@@ -20,7 +21,8 @@ const FIELD_TYPES = {
   time: 'ساعت',
   time_range: 'بازه ساعت (شروع/پایان)',
   select: 'انتخابی (دراپ‌داون)',
-  image: 'تصویر (آپلود عکس)',
+  image: 'تصویر (فقط آپلود عکس)',
+  file: 'فایل/سند (هر نوع فایل: PDF, Word, Excel, عکس و …)',
 };
 
 export default function Workflows() {
@@ -88,9 +90,21 @@ export default function Workflows() {
                 </span>
               ))}
             </div>
-            <button className={`btn btn-sm ${t.is_active ? 'btn-success' : 'btn-ghost'}`} onClick={() => toggleActive(t)}>
-              {t.is_active ? 'فعال ✓' : 'غیرفعال'}
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <button className={`btn btn-sm ${t.is_active ? 'btn-success' : 'btn-ghost'}`} onClick={() => toggleActive(t)}>
+                {t.is_active ? 'فعال ✓' : 'غیرفعال'}
+              </button>
+              {/* [پیوست‌ها] نشانِ فایل‌های ضمیمهٔ راهنمای این فرآیند */}
+              {(() => {
+                let n = 0;
+                try { n = JSON.parse(t.attachments || '[]').length; } catch {}
+                return n ? (
+                  <span className="badge badge-sky" title={`${fa(n)} فایل راهنما ضمیمهٔ این فرآیند است`}>
+                    <Paperclip size={11} /> {fa(n)} فایل ضمیمه
+                  </span>
+                ) : null;
+              })()}
+            </div>
           </div>
         ))}
       </div>
@@ -194,9 +208,8 @@ function TemplateModal({ tpl, onClose, onDone }) {
   const [scopeDeptIds, setScopeDeptIds] = useState(() => { try { return JSON.parse(tpl?.scope_dept_ids || '[]'); } catch { return []; } });
   // [مورد ۳] مهلت کل تایید
   const [totalDeadline, setTotalDeadline] = useState(tpl?.total_deadline_hours || 0);
-  // [مورد ۲] عکس‌های ضمیمهٔ فرآیند (file idها)
+  // [مورد ۲] فایل‌های ضمیمهٔ فرآیند — عکس یا هر سند دیگر (آرایه‌ای از file id)
   const [attachments, setAttachments] = useState(() => { try { return JSON.parse(tpl?.attachments || '[]'); } catch { return []; } });
-  const [uploadingAtt, setUploadingAtt] = useState(false);
   // [مورد ۷] تسک پس از تایید نهایی
   const [finalTask, setFinalTask] = useState({
     enabled: !!tpl?.final_task_enabled,
@@ -294,31 +307,10 @@ function TemplateModal({ tpl, onClose, onDone }) {
         </div>
       </Field>
 
-      {/* [مورد ۲] عکس‌های ضمیمهٔ فرآیند (راهنما/نمونه) */}
-      <Field label="عکس‌های ضمیمهٔ فرآیند (راهنما/نمونه)"
-        hint="این عکس‌ها هنگام ثبت درخواست به کاربر نمایش داده می‌شوند.">
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-          {attachments.map(fid => (
-            <div key={fid} style={{ position: 'relative' }}>
-              <img src={workflowFileUrl(fid)} alt="" style={{ width: 74, height: 74, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }} />
-              <button type="button" className="icon-btn" title="حذف"
-                style={{ position: 'absolute', top: -8, left: -8, width: 22, height: 22, background: 'var(--red)', color: '#fff', borderRadius: '50%' }}
-                onClick={() => setAttachments(attachments.filter(x => x !== fid))}><X size={12} /></button>
-            </div>
-          ))}
-          <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
-            <ImageIcon size={14} /> {uploadingAtt ? 'در حال آپلود…' : 'افزودن عکس'}
-            <input type="file" accept="image/*" hidden disabled={uploadingAtt}
-              onChange={async e => {
-                const file = e.target.files?.[0]; e.target.value = '';
-                if (!file) return;
-                setUploadingAtt(true);
-                try { const id = await uploadWorkflowImage(file); setAttachments(a => [...a, id]); }
-                catch (err) { toast(err.message || 'خطا در آپلود', 'error'); }
-                setUploadingAtt(false);
-              }} />
-          </label>
-        </div>
+      {/* [مورد ۲] فایل‌های ضمیمهٔ فرآیند (راهنما/نمونه) — عکس یا هر سند دیگر */}
+      <Field label="فایل‌های ضمیمهٔ فرآیند (راهنما/نمونه)"
+        hint="هر نوع فایلی می‌توانید بگذارید: عکس، PDF، Word، Excel، فایل فشرده و … . این فایل‌ها هنگام ثبت درخواست به کاربر نمایش داده می‌شوند (حداکثر ۲۵ مگابایت برای هر فایل).">
+        <AttachmentPicker value={attachments} onChange={setAttachments} placeholder="انتخاب فایل" label="افزودن فایل" />
       </Field>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '18px 0 10px' }}>
@@ -563,6 +555,13 @@ function TemplateModal({ tpl, onClose, onDone }) {
               placeholder="گزینه‌ها را با ، جدا کنید — مثلاً: بله، خیر، نامشخص"
               value={(f.options || []).join('، ')}
               onChange={e => setField(i, { options: e.target.value.split(/[,،]/).map(s => s.trim()).filter(Boolean) })} />
+          )}
+          {(f.type === 'file' || f.type === 'image') && (
+            <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 6, lineHeight: 1.7 }}>
+              {f.type === 'file'
+                ? 'کاربر می‌تواند هر تعداد و هر نوع فایلی پیوست کند: عکس، PDF، Word، Excel، PowerPoint، متن، فایل فشرده و … (هر فایل تا ۲۵ مگابایت).'
+                : 'فقط فایل تصویری پذیرفته می‌شود. اگر می‌خواهید سندهای دیگر (PDF/Word/Excel) هم قابل ارسال باشد، نوع فیلد را «فایل/سند» انتخاب کنید.'}
+            </div>
           )}
         </div>
       ))}

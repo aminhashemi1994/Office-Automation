@@ -244,8 +244,10 @@ try {
 
 // [مورد ۱] محدودهٔ واحدهای مجاز برای هر فرایند — [] یعنی همه‌جا در دسترس است
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN scope_dept_ids TEXT DEFAULT '[]'"); } catch {}
-// [مورد ۲] عکس‌های ضمیمهٔ خودِ فرایند (راهنما/نمونه) — آرایهٔ JSON از file id
+// [مورد ۲] فایل‌های ضمیمهٔ خودِ فرایند (راهنما/نمونه — عکس یا هر سند دیگر) — آرایهٔ JSON از file id
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN attachments TEXT DEFAULT '[]'"); } catch {}
+// [پیوست اقدام] فایل‌هایی که افرادِ سلسله‌مراتب هنگام تایید/رد/یادداشت پیوست می‌کنند — آرایهٔ JSON از file id
+try { db.exec("ALTER TABLE workflow_actions ADD COLUMN attachments TEXT DEFAULT '[]'"); } catch {}
 // [مورد ۳] مهلت کلِ تایید (ساعت) — می‌تواند برابر جمع مهلت مراحل تنظیم شود
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN total_deadline_hours INTEGER DEFAULT 0"); } catch {}
 // [مورد ۷] پس از تایید نهایی، تسک ساخته شود؟ + مسئول و مهلت آن

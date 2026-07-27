@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ArrowRight, Check, X, Clock, Ban, SkipForward, Printer, Bell, ListTodo } from 'lucide-react';
-import { api, workflowFileUrl } from '../api.js';
+import { ArrowRight, Check, X, Clock, Ban, SkipForward, Printer, Bell, ListTodo, Paperclip } from 'lucide-react';
+import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtDateTime, parseDate, formatFieldValue } from '../utils.js';
 import { Modal, Field, UserPicker } from '../components/common.jsx';
-import { STATUS, toImageIds } from './Cartable.jsx';
+import { STATUS } from './Cartable.jsx';
+import { AttachmentList, AttachmentPicker, primeFilesMeta, toFileIds } from '../components/Attachments.jsx';
 import { printRequest } from '../utils.js';
 
 const ACTION_LABEL = {
@@ -21,14 +22,17 @@ export default function RequestDetail() {
   const navigate = useNavigate();
   const { user, users, settings, hasPerm, on, toast, refreshBadges } = useStore();
   const [req, setReq] = useState(null);
-  const [confirm, setConfirm] = useState(null); // 'approve' | 'reject'
+  const [confirm, setConfirm] = useState(null); // 'approve' | 'reject' | 'skip'
   const [comment, setComment] = useState('');
+  const [actionFiles, setActionFiles] = useState([]); // [پیوست‌ها] فایل‌های پیوستِ اقدام
+  const [note, setNote] = useState(null); // {comment, attachments} — یادداشت/پیوست بدون تغییر مرحله
   const [busy, setBusy] = useState(false);
   const [makeTask, setMakeTask] = useState(null); // {title, assignee_type, assignee_id, deadline_hours}
 
   const load = async () => {
     try {
       const r = await api(`/workflows/requests/${id}`);
+      primeFilesMeta(r.request?.files); // نام/حجم فایل‌ها همراه پاسخ می‌آید
       setReq(r.request);
     } catch (e) { toast(e.message, 'error'); navigate('/cartable'); }
   };
@@ -45,11 +49,27 @@ export default function RequestDetail() {
   const act = async () => {
     setBusy(true);
     try {
-      await api(`/workflows/requests/${req.id}/action`, { method: 'POST', body: { action: confirm, comment } });
-      setConfirm(null); setComment('');
+      await api(`/workflows/requests/${req.id}/action`, { method: 'POST', body: { action: confirm, comment, attachments: actionFiles } });
+      setConfirm(null); setComment(''); setActionFiles([]);
       await load();
       refreshBadges();
       toast(confirm === 'approve' ? 'تایید شد و به مرحله بعد رفت' : confirm === 'skip' ? 'بدون اظهارنظر عبور داده شد' : 'درخواست رد شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
+  // [پیوست‌ها] ثبت یادداشت و/یا پیوستِ فایل بدون تغییر مرحله —
+  // برای همهٔ افرادِ درگیر در سلسله‌مراتب (درخواست‌دهنده، تاییدکنندگان، مدیران)
+  const submitNote = async () => {
+    setBusy(true);
+    try {
+      await api(`/workflows/requests/${req.id}/comment`, { method: 'POST', body: {
+        comment: note.comment, attachments: note.attachments,
+      } });
+      setNote(null);
+      await load();
+      refreshBadges();
+      toast('یادداشت/پیوست ثبت شد');
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
   };
@@ -127,16 +147,9 @@ export default function RequestDetail() {
             {schema.map(f => (
               <div key={f.key} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--border-soft)' }}>
                 <span style={{ color: 'var(--text-2)', fontSize: 13, minWidth: 140 }}>{f.label}:</span>
-                {f.type === 'image' ? (
-                  toImageIds(data[f.key]).length ? (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {toImageIds(data[f.key]).map(fid => (
-                        <a key={fid} href={workflowFileUrl(fid)} target="_blank" rel="noreferrer">
-                          <img src={workflowFileUrl(fid)} alt={f.label} style={{ maxWidth: 160, maxHeight: 160, borderRadius: 8, border: '1px solid var(--border)' }} />
-                        </a>
-                      ))}
-                    </div>
-                  ) : <span style={{ color: 'var(--text-3)' }}>—</span>
+                {(f.type === 'image' || f.type === 'file') ? (
+                  <AttachmentList ids={data[f.key]} thumb={104}
+                    empty={<span style={{ color: 'var(--text-3)' }}>—</span>} />
                 ) : (
                   <span style={{ fontWeight: 600, whiteSpace: 'pre-wrap' }}>{formatFieldValue(f, data[f.key])}</span>
                 )}
@@ -145,15 +158,27 @@ export default function RequestDetail() {
           </div>
 
           <div className="card card-pad">
-            <b style={{ display: 'block', marginBottom: 12 }}>تاریخچه اقدامات</b>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <b>تاریخچه اقدامات و پیوست‌ها</b>
+              {/* [پیوست‌ها] هر فردِ درگیر در این سلسله‌مراتب می‌تواند فایل پیوست کند */}
+              <button className="btn btn-ghost btn-sm" onClick={() => setNote({ comment: '', attachments: [] })}>
+                <Paperclip size={14} /> افزودن یادداشت / پیوست فایل
+              </button>
+            </div>
             {req.actions.map(a => {
               const [al, ac] = ACTION_LABEL[a.action] || ACTION_LABEL.comment;
+              const atts = toFileIds((() => { try { return JSON.parse(a.attachments || '[]'); } catch { return []; } })());
               return (
                 <div key={a.id} style={{ display: 'flex', gap: 10, padding: '9px 0', borderBottom: '1px solid var(--border-soft)', alignItems: 'baseline' }}>
                   <span className={`badge ${ac}`}>{al}</span>
-                  <div style={{ flex: 1 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <b style={{ fontSize: 13.3 }}>{a.actor_name}</b>
                     {a.comment && <div style={{ fontSize: 12.8, color: 'var(--text-2)' }}>{a.comment}</div>}
+                    {atts.length > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        <AttachmentList ids={atts} thumb={84} title="پیوستِ این اقدام" />
+                      </div>
+                    )}
                   </div>
                   <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>{fmtDateTime(a.created_at)}</span>
                 </div>
@@ -245,9 +270,10 @@ export default function RequestDetail() {
       )}
 
       {confirm && (
-        <Modal title={confirm === 'approve' ? 'تایید درخواست' : confirm === 'skip' ? 'عبور از مرحله' : 'رد درخواست'} onClose={() => setConfirm(null)}
+        <Modal title={confirm === 'approve' ? 'تایید درخواست' : confirm === 'skip' ? 'عبور از مرحله' : 'رد درخواست'}
+          onClose={() => { setConfirm(null); setActionFiles([]); }}
           footer={<>
-            <button className="btn btn-ghost" onClick={() => setConfirm(null)}>انصراف</button>
+            <button className="btn btn-ghost" onClick={() => { setConfirm(null); setActionFiles([]); }}>انصراف</button>
             <button className={`btn ${confirm === 'reject' ? 'btn-danger' : 'btn-primary'}`} onClick={act} disabled={busy}>
               {confirm === 'approve' ? 'تایید نهایی' : confirm === 'skip' ? 'عبور از این مرحله' : 'رد درخواست'}
             </button>
@@ -255,6 +281,34 @@ export default function RequestDetail() {
           <Field label="توضیحات (اختیاری)">
             <textarea className="input" value={comment} onChange={e => setComment(e.target.value)} autoFocus
               placeholder={confirm === 'reject' ? 'دلیل رد درخواست…' : 'توضیحات تکمیلی…'} />
+          </Field>
+          {/* [پیوست‌ها] تاییدکننده هم می‌تواند سند پیوست کند */}
+          <Field label="پیوست فایل (اختیاری)"
+            hint="هر نوع فایلی: عکس، PDF، Word، Excel، فایل فشرده و … (هر فایل تا ۲۵ مگابایت)">
+            <AttachmentPicker value={actionFiles} onChange={setActionFiles} />
+          </Field>
+        </Modal>
+      )}
+
+      {/* [پیوست‌ها] یادداشت/پیوست بدون تغییر مرحله — برای افرادِ درگیر در سلسله‌مراتب */}
+      {note && (
+        <Modal title="افزودن یادداشت / پیوست فایل" onClose={() => setNote(null)}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setNote(null)}>انصراف</button>
+            <button className="btn btn-primary" disabled={busy || (!note.comment.trim() && !note.attachments.length)}
+              onClick={submitNote}>ثبت</button>
+          </>}>
+          <p style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 0 }}>
+            این یادداشت مرحلهٔ درخواست را تغییر نمی‌دهد؛ فقط در تاریخچه ثبت می‌شود و برای درخواست‌دهنده و مسئول مرحلهٔ فعلی اعلان می‌رود.
+          </p>
+          <Field label="یادداشت">
+            <textarea className="input" value={note.comment} autoFocus
+              placeholder="توضیح دربارهٔ فایل پیوست…"
+              onChange={e => setNote(n => ({ ...n, comment: e.target.value }))} />
+          </Field>
+          <Field label="پیوست فایل"
+            hint="هر نوع فایلی: عکس، PDF، Word، Excel، فایل فشرده و … (هر فایل تا ۲۵ مگابایت)">
+            <AttachmentPicker value={note.attachments} onChange={v => setNote(n => ({ ...n, attachments: v }))} />
           </Field>
         </Modal>
       )}

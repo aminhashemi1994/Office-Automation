@@ -29,17 +29,36 @@ export function fileUrl(id) {
   return `/api/chat/files/${id}?token=${encodeURIComponent(token)}`;
 }
 
-// تصویرِ ضمیمهٔ فرآیند/درخواست (نمایش inline)
+// فایلِ ضمیمهٔ فرآیند/درخواست — عکس و PDF داخل مرورگر باز می‌شوند،
+// بقیهٔ اسناد (Word/Excel/…) توسط سرور به‌صورت دانلود ارائه می‌شوند.
 export function workflowFileUrl(id) {
   return `/api/workflows/files/${id}?token=${encodeURIComponent(token)}`;
 }
 
-// آپلود تصویر برای فرآیند/درخواست → id فایل را برمی‌گرداند
-export async function uploadWorkflowImage(file) {
+// همیشه دانلود (برای دکمهٔ «دریافت فایل»)
+export function workflowFileDownloadUrl(id) {
+  return `/api/workflows/files/${id}?download=1&token=${encodeURIComponent(token)}`;
+}
+
+// آپلود یک فایل ضمیمه (هر نوع سند یا عکس) → { id, original_name, mime, size }
+export async function uploadWorkflowFile(file) {
   const fd = new FormData();
-  fd.append('image', file);
+  fd.append('file', file);
   const res = await api('/workflows/upload', { method: 'POST', formData: fd });
-  return res.id;
+  return { id: res.id, original_name: res.original_name || file.name, mime: res.mime || file.type || '', size: res.size ?? file.size ?? 0 };
+}
+
+// سازگاری با کدهای قبلی — فقط id را برمی‌گرداند
+export async function uploadWorkflowImage(file) {
+  return (await uploadWorkflowFile(file)).id;
+}
+
+// اطلاعات (نام/نوع/حجم) چند فایل با یک درخواست
+export async function fetchWorkflowFilesMeta(ids) {
+  const list = [...new Set((ids || []).map(Number).filter(Boolean))];
+  if (!list.length) return [];
+  const res = await api(`/workflows/files-meta?ids=${list.join(',')}`);
+  return res.files || [];
 }
 
 export function recordingStreamUrl(id) {

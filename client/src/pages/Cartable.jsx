@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Clock, Search, Image as ImageIcon, X } from 'lucide-react';
-import { api, uploadWorkflowImage, workflowFileUrl } from '../api.js';
+import { Plus, Clock, Search, Paperclip } from 'lucide-react';
+import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtRelative, fmtDateTime, parseDate } from '../utils.js';
 import { Modal, Field } from '../components/common.jsx';
+import { AttachmentPicker, AttachmentList, toFileIds as toIds } from '../components/Attachments.jsx';
 import { JalaliDatePicker } from '../components/JalaliDatePicker.jsx';
 import { TimePicker } from '../components/TimePicker.jsx';
 import { todayJalali, formatJalali } from '../jalali.js';
@@ -96,7 +97,16 @@ export default function Cartable() {
                 const overdue = r.status === 'in_progress' && r.step_due_at && parseDate(r.step_due_at) < new Date();
                 return (
                   <tr key={r.id}>
-                    <td><Link to={`/cartable/${r.id}`} style={{ fontWeight: 600, color: 'var(--primary)' }}>{r.title}</Link></td>
+                    <td>
+                      <Link to={`/cartable/${r.id}`} style={{ fontWeight: 600, color: 'var(--primary)' }}>{r.title}</Link>
+                      {/* [پیوست‌ها] نشانِ «این درخواست فایل پیوست دارد» */}
+                      {r.attachments_count > 0 && (
+                        <span className="badge badge-sky" style={{ marginRight: 6 }}
+                          title={`${r.attachments_count.toLocaleString('fa-IR')} فایل پیوست دارد`}>
+                          <Paperclip size={11} /> {r.attachments_count.toLocaleString('fa-IR')}
+                        </span>
+                      )}
+                    </td>
                     <td>{r.template_name}</td>
                     {tab !== 'mine' && <td>{r.requester_name}</td>}
                     <td>
@@ -126,45 +136,23 @@ export default function Cartable() {
   );
 }
 
-// [مورد ۲] فیلد آپلود تصویر در فرم درخواست — چند عکس؛ مقدار، آرایه‌ای از id فایل‌هاست.
+// [مورد ۲] فیلد پیوستِ فایل در فرم درخواست — چند فایل؛ مقدار، آرایه‌ای از id فایل‌هاست.
+// نوع فیلد 'image' فقط عکس می‌پذیرد و نوع 'file' هر سندی (PDF/Word/Excel/عکس/…).
 // (سازگاری با دادهٔ قدیمیِ تک‌عکس: مقدار عددی/رشته‌ای هم پذیرفته می‌شود.)
-export function toImageIds(value) {
-  if (Array.isArray(value)) return value.filter(Boolean);
-  if (value) return [value];
-  return [];
-}
-function ImageField({ value, onChange, placeholder }) {
-  const { toast } = useStore();
-  const [busy, setBusy] = useState(false);
-  const ids = toImageIds(value);
-  const addFiles = async (files) => {
-    if (!files.length) return;
-    setBusy(true);
-    try {
-      const uploaded = [];
-      for (const f of files) uploaded.push(await uploadWorkflowImage(f));
-      onChange([...ids, ...uploaded]);
-    } catch (err) { toast(err.message || 'خطا در آپلود', 'error'); }
-    setBusy(false);
-  };
+export const toFileIds = toIds;
+export const toImageIds = toIds; // نام قبلی — برای سازگاری
+
+function FormFileField({ field, value, onChange }) {
+  const onlyImages = field.type === 'image';
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-      {ids.map(fid => (
-        <div key={fid} style={{ position: 'relative' }}>
-          <a href={workflowFileUrl(fid)} target="_blank" rel="noreferrer">
-            <img src={workflowFileUrl(fid)} alt="" style={{ width: 84, height: 84, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }} />
-          </a>
-          <button type="button" className="icon-btn" title="حذف"
-            style={{ position: 'absolute', top: -8, left: -8, width: 22, height: 22, background: 'var(--red)', color: '#fff', borderRadius: '50%' }}
-            onClick={() => onChange(ids.filter(x => x !== fid))}><X size={12} /></button>
-        </div>
-      ))}
-      <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
-        <ImageIcon size={14} /> {busy ? 'در حال آپلود…' : (ids.length ? 'افزودن عکس' : (placeholder || 'انتخاب عکس'))}
-        <input type="file" accept="image/*" multiple hidden disabled={busy}
-          onChange={async e => { const files = [...(e.target.files || [])]; e.target.value = ''; await addFiles(files); }} />
-      </label>
-    </div>
+    <AttachmentPicker
+      value={value}
+      onChange={onChange}
+      accept={onlyImages ? 'image/*' : undefined}
+      placeholder={field.placeholder || (onlyImages ? 'انتخاب عکس' : 'انتخاب فایل')}
+      label={onlyImages ? 'افزودن عکس' : 'افزودن فایل'}
+      thumb={84}
+    />
   );
 }
 
@@ -210,8 +198,8 @@ function NewRequestModal({ templates, onClose, onDone }) {
       if (f.required) {
         const missing = f.type === 'time_range'
           ? (!v || !v.start || !v.end)
-          : f.type === 'image'
-          ? toImageIds(v).length === 0
+          : (f.type === 'image' || f.type === 'file')
+          ? toIds(v).length === 0
           : !String(v ?? '').trim();
         if (missing) return toast(`«${f.label}» الزامی است`, 'error');
       }
@@ -248,14 +236,10 @@ function NewRequestModal({ templates, onClose, onDone }) {
         </select>
       </Field>
       {tpl?.description && <p style={{ fontSize: 12.8, color: 'var(--text-2)', margin: '-6px 0 14px' }}>{tpl.description}</p>}
-      {/* [مورد ۲] عکس‌های راهنمای فرآیند */}
+      {/* [مورد ۲] فایل‌های راهنمای فرآیند (عکس یا هر سند دیگر) */}
       {(() => { let atts = []; try { atts = JSON.parse(tpl?.attachments || '[]'); } catch {} return atts.length ? (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
-          {atts.map(fid => (
-            <a key={fid} href={workflowFileUrl(fid)} target="_blank" rel="noreferrer">
-              <img src={workflowFileUrl(fid)} alt="راهنما" style={{ width: 90, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }} />
-            </a>
-          ))}
+        <div style={{ marginBottom: 14 }}>
+          <AttachmentList ids={atts} thumb={96} title="فایل‌های راهنمای این فرآیند" />
         </div>
       ) : null; })()}
       {tpl && (
@@ -310,13 +294,13 @@ function NewRequestModal({ templates, onClose, onDone }) {
                   onChange={v => setData(d => ({ ...d, [f.key]: { ...(d[f.key] || {}), end: v } }))} />
               </div>
             </div>
-          ) : f.type === 'image' ? (
-            <ImageField value={data[f.key]} onChange={v => setData(d => ({ ...d, [f.key]: v }))} placeholder={f.placeholder} />
+          ) : (f.type === 'image' || f.type === 'file') ? (
+            <FormFileField field={f} value={data[f.key]} onChange={v => setData(d => ({ ...d, [f.key]: v }))} />
           ) : (
             <input className="input" type={f.type === 'number' ? 'number' : 'text'} placeholder={f.placeholder || ''}
               value={data[f.key] || ''} onChange={e => setData(d => ({ ...d, [f.key]: e.target.value }))} />
           )}
-          {f.placeholder && f.type !== 'text' && f.type !== 'number' && f.type !== 'textarea' && f.type !== 'select' && f.type !== 'date' && (
+          {f.placeholder && !['text', 'number', 'textarea', 'select', 'date', 'image', 'file'].includes(f.type) && (
             <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>{f.placeholder}</div>
           )}
         </Field>

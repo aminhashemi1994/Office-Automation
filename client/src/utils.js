@@ -57,6 +57,12 @@ export function formatFieldValue(field, value) {
     return faDigits(String(value));
   }
   if (type === 'number') return faDigits(String(value));
+  // فیلدهای فایلی (عکس/سند): مقدار، آرایه‌ای از شناسهٔ فایل است
+  if (type === 'image' || type === 'file') {
+    const ids = Array.isArray(value) ? value : [value];
+    const n = ids.filter(Boolean).length;
+    return n ? `${faDigits(String(n))} فایل پیوست` : '—';
+  }
   return String(value);
 }
 
@@ -93,8 +99,21 @@ export function printRequest(req, statusLabel = '', settings = {}) {
   const logo = settings.logo_path
     ? `<img class="logo" src="/branding/${encodeURIComponent(settings.logo_path)}" alt="لوگو" />` : '';
 
+  // نامِ فایل‌های پیوست (سرور همراه جزئیات درخواست می‌فرستد) تا در سند چاپی نام واقعی بیاید
+  const fileNames = new Map((req.files || []).map(f => [Number(f.id), f.original_name || '']));
+  const fileList = (value) => {
+    const ids = (Array.isArray(value) ? value : [value]).map(Number).filter(Boolean);
+    if (!ids.length) return '—';
+    return ids.map(id => fileNames.get(id) || `فایل #${fa(id)}`).join('، ');
+  };
+
   const formRows = schema.length
-    ? schema.map(f => `<tr><th>${esc(f.label)}</th><td>${esc(formatFieldValue(f, data[f.key]))}</td></tr>`).join('')
+    ? schema.map(f => {
+        const cell = (f.type === 'image' || f.type === 'file')
+          ? fileList(data[f.key])
+          : formatFieldValue(f, data[f.key]);
+        return `<tr><th>${esc(f.label)}</th><td>${esc(cell)}</td></tr>`;
+      }).join('')
     : '<tr><td colspan="2">فرم اطلاعاتی ندارد</td></tr>';
 
   // امضا فقط برای اقدام‌های «تایید» و فقط برای مراحلی که در فرم «درج امضا» فعال بوده،
@@ -126,9 +145,13 @@ export function printRequest(req, statusLabel = '', settings = {}) {
     return `<tr><td>${fa(s.step_order)}</td><td>${esc(s.title)}${s.is_optional ? ' (اختیاری)' : ''}</td><td>${esc(people)}</td></tr>`;
   }).join('');
 
-  const actionRows = (req.actions || []).map(a =>
-    `<tr><td>${esc(ACTION_FA[a.action] || a.action)}</td><td>${esc(a.actor_name)}</td><td>${esc(a.comment || '—')}</td><td>${esc(fmtDateTime(a.created_at))}</td></tr>`
-  ).join('');
+  const actionRows = (req.actions || []).map(a => {
+    let atts = [];
+    try { atts = JSON.parse(a.attachments || '[]'); } catch {}
+    const attText = atts.length ? `پیوست: ${fileList(atts)}` : '';
+    const note = [a.comment || '', attText].filter(Boolean).join(' — ') || '—';
+    return `<tr><td>${esc(ACTION_FA[a.action] || a.action)}</td><td>${esc(a.actor_name)}</td><td>${esc(note)}</td><td>${esc(fmtDateTime(a.created_at))}</td></tr>`;
+  }).join('');
 
   const html = `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <title>سند درخواست ${esc(req.title)} — شماره ${fa(req.id)}</title>

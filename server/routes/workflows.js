@@ -12,34 +12,165 @@ import { activeDeputiesOf } from './delegations.js';
 
 const r = Router();
 
-// [مورد ۲] آپلود عکسِ ضمیمهٔ فرآیند/درخواست — فقط تصویر، تا ۱۰ مگابایت
-const imageUpload = multer({
+// ---------- [مورد ۲] آپلود فایلِ ضمیمهٔ فرآیند/درخواست ----------
+// هر نوع «سند» مجاز است: عکس، PDF، Word، Excel، PowerPoint، متن، فایل فشرده و … .
+// فقط فایل‌های اجراییِ خطرناک مسدود می‌شوند (چون روی سرور/ویندوزِ کاربر قابل اجرا هستند).
+export const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024; // ۲۵ مگابایت
+const MAX_ATTACHMENT_MB_FA = '۲۵';
+
+const BLOCKED_EXT = new Set([
+  '.exe', '.msi', '.msp', '.com', '.bat', '.cmd', '.pif', '.scr', '.cpl', '.sys', '.dll', '.drv',
+  '.sh', '.bash', '.zsh', '.run', '.bin', '.deb', '.rpm', '.appimage',
+  '.ps1', '.psm1', '.vbs', '.vbe', '.wsf', '.wsh', '.hta', '.reg', '.lnk', '.scf', '.inf',
+  '.js', '.mjs', '.cjs', '.jse', '.jar', '.apk', '.app', '.dmg', '.gadget', '.workflow',
+]);
+
+// این پسوندها اگر داخل مرورگر «باز» شوند می‌توانند اسکریپت اجرا کنند → همیشه دانلود می‌شوند
+const NEVER_INLINE_EXT = new Set(['.html', '.htm', '.xhtml', '.shtml', '.svg', '.svgz', '.xml', '.xsl', '.xslt', '.mhtml', '.mht']);
+
+// نامِ فایل را busboy با latin1 می‌خواند؛ نام‌های فارسی باید به UTF-8 برگردانده شوند
+function decodeFileName(name = '') {
+  try {
+    const buf = Buffer.from(String(name), 'latin1');
+    const utf8 = buf.toString('utf8');
+    if (!utf8.includes('\uFFFD') && Buffer.from(utf8, 'utf8').equals(buf)) return utf8;
+  } catch {}
+  return String(name);
+}
+
+function safeExt(originalname = '') {
+  const ext = path.extname(String(originalname)).toLowerCase();
+  return /^\.[a-z0-9]{1,12}$/.test(ext) ? ext : '';
+}
+
+const attachmentMulter = multer({
   storage: multer.diskStorage({
     destination: SHARED_FILES_DIR,
-    filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString('hex') + path.extname(file.originalname)),
+    filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString('hex') + safeExt(file.originalname)),
   }),
-  limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => cb(file.mimetype?.startsWith('image/') ? null : new Error('فقط فایل تصویری مجاز است'), file.mimetype?.startsWith('image/')),
+  limits: { fileSize: MAX_ATTACHMENT_SIZE, files: 10 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(decodeFileName(file.originalname)).toLowerCase();
+    if (BLOCKED_EXT.has(ext)) {
+      return cb(new Error(`فایل «${ext}» مجاز نیست (فایل اجرایی). سند، عکس یا فایل فشرده ارسال کنید`));
+    }
+    cb(null, true);
+  },
 });
 
-r.post('/upload', imageUpload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'تصویری ارسال نشد' });
-  const info = db.prepare('INSERT INTO files (stored_name, original_name, mime, size, uploader_id) VALUES (?, ?, ?, ?, ?)')
-    .run(req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, req.user.id);
-  res.json({ id: info.lastInsertRowid });
+// خطاهای multer (حجم/نوع فایل) را با پیام فارسی و کد ۴۰۰ برگردان — نه ۵۰۰
+function attachmentUpload(req, res, next) {
+  attachmentMulter.any()(req, res, (err) => {
+    if (!err) return next();
+    const msg = err.code === 'LIMIT_FILE_SIZE'
+      ? `حجم فایل بیش از حد مجاز است (حداکثر ${MAX_ATTACHMENT_MB_FA} مگابایت)`
+      : err.code === 'LIMIT_FILE_COUNT'
+      ? 'تعداد فایل‌ها در هر بار آپلود بیش از حد مجاز است'
+      : (err.message || 'خطا در آپلود فایل');
+    return res.status(400).json({ error: msg });
+  });
+}
+
+// آپلود یک یا چند فایل ضمیمه. نام فیلد آزاد است (file / files / image — برای سازگاری با نسخهٔ قبل).
+r.post('/upload', attachmentUpload, (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: 'فایلی ارسال نشد' });
+  const ins = db.prepare('INSERT INTO files (stored_name, original_name, mime, size, uploader_id) VALUES (?, ?, ?, ?, ?)');
+  const out = files.map(f => {
+    const original = decodeFileName(f.originalname) || 'file';
+    const mime = f.mimetype || 'application/octet-stream';
+    const info = ins.run(f.filename, original, mime, f.size || 0, req.user.id);
+    return { id: Number(info.lastInsertRowid), original_name: original, mime, size: f.size || 0 };
+  });
+  // سازگاری با کلاینت قدیم: id فایل اول در ریشهٔ پاسخ هم می‌آید
+  res.json({ ...out[0], files: out });
 });
 
-// سرو تصویر به‌صورت inline (برای نمایش داخل صفحه) — نیازمند احرازهویت
+// اطلاعات (نام/نوع/حجم) چند فایل با هم — برای نمایش فهرست پیوست‌ها در کلاینت
+r.get('/files-meta', (req, res) => {
+  const ids = [...new Set(String(req.query.ids || '').split(',').map(Number).filter(Boolean))].slice(0, 300);
+  if (!ids.length) return res.json({ files: [] });
+  const rows = db.prepare(`SELECT id, original_name, mime, size, created_at FROM files WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
+  res.json({ files: rows });
+});
+
+// آیا این فایل را می‌توان بی‌خطر داخل مرورگر نمایش داد؟ (عکس/PDF/متن/صوت/ویدیو)
+function isInlineSafe(f) {
+  const ext = path.extname(f.original_name || '').toLowerCase();
+  if (NEVER_INLINE_EXT.has(ext)) return false;
+  const mime = f.mime || '';
+  return mime.startsWith('image/') || mime.startsWith('audio/') || mime.startsWith('video/')
+    || mime === 'application/pdf' || mime === 'text/plain';
+}
+
+// سرو فایل ضمیمه — نیازمند احرازهویت.
+// عکس/PDF به‌صورت inline نمایش داده می‌شوند؛ بقیهٔ اسناد (Word/Excel/…) دانلود می‌شوند.
+// با ?download=1 هر فایلی به‌صورت دانلود ارائه می‌شود.
 r.get('/files/:id', (req, res) => {
   const f = db.prepare('SELECT * FROM files WHERE id = ?').get(req.params.id);
   if (!f) return res.status(404).json({ error: 'فایل یافت نشد' });
   let p = path.join(SHARED_FILES_DIR, f.stored_name);
   if (!fs.existsSync(p)) p = path.join(UPLOADS_DIR, f.stored_name);
   if (!fs.existsSync(p)) return res.status(404).json({ error: 'فایل یافت نشد' });
-  res.setHeader('Content-Type', f.mime || 'application/octet-stream');
+
+  const inlineSafe = isInlineSafe(f);
+  const asDownload = req.query.download === '1' || !inlineSafe;
+  const name = f.original_name || `file-${f.id}`;
+  const asciiName = name.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+  res.setHeader('Content-Type', inlineSafe ? (f.mime || 'application/octet-stream') : 'application/octet-stream');
+  res.setHeader('Content-Disposition',
+    `${asDownload ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(name)}`);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, max-age=3600');
+  try { res.setHeader('Content-Length', fs.statSync(p).size); } catch {}
   fs.createReadStream(p).pipe(res);
 });
+
+// شناسه‌های فایلِ ورودی را پاک‌سازی می‌کند: فقط idهایی که واقعاً در جدول files وجود دارند
+function normalizeFileIds(value) {
+  const ids = [...new Set((Array.isArray(value) ? value : value ? [value] : []).map(Number).filter(Boolean))].slice(0, 50);
+  if (!ids.length) return [];
+  const found = new Set(db.prepare(`SELECT id FROM files WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids).map(x => x.id));
+  return ids.filter(id => found.has(id));
+}
+
+// انواع فیلدِ فرم که مقدارشان «شناسهٔ فایل» است (عکس یا هر سند دیگر)
+const FILE_FIELD_TYPES = new Set(['image', 'file']);
+
+// file idهای موجود در مقدارِ یک فیلدِ فایلی (سازگار با دادهٔ قدیمیِ تک‌فایلی)
+function fieldFileIds(value) {
+  if (Array.isArray(value)) return value.map(Number).filter(Boolean);
+  return Number(value) ? [Number(value)] : [];
+}
+
+// همهٔ file idهایی که در فرمِ یک درخواست ارجاع داده شده‌اند (بر اساس نوعِ فیلد در form_schema)
+function fileIdsInForm(formSchemaRaw, formDataRaw) {
+  let schema = [], data = {};
+  try { schema = JSON.parse(formSchemaRaw || '[]'); } catch {}
+  try { data = JSON.parse(formDataRaw || '{}'); } catch {}
+  const out = [];
+  for (const f of Array.isArray(schema) ? schema : []) {
+    if (f && FILE_FIELD_TYPES.has(f.type)) out.push(...fieldFileIds(data?.[f.key]));
+  }
+  return out;
+}
+
+// شمارِ کلِ فایل‌های پیوستِ یک درخواست (فرم + پیوستِ اقدام‌ها) — برای نشانِ «پیوست دارد» در فهرست‌ها
+function attachmentCount(rq) {
+  const schema = db.prepare('SELECT form_schema FROM workflow_templates WHERE id = ?').get(rq.template_id)?.form_schema;
+  let n = fileIdsInForm(schema, rq.form_data).length;
+  for (const row of db.prepare('SELECT attachments FROM workflow_actions WHERE request_id = ?').all(rq.id)) {
+    try { n += JSON.parse(row.attachments || '[]').length; } catch {}
+  }
+  return n;
+}
+
+// اطلاعات نام/نوع/حجم چند فایل — برای همراه‌کردن با پاسخِ جزئیات درخواست
+function filesMetaByIds(ids) {
+  const uniq = [...new Set((ids || []).map(Number).filter(Boolean))].slice(0, 500);
+  if (!uniq.length) return [];
+  return db.prepare(`SELECT id, original_name, mime, size FROM files WHERE id IN (${uniq.map(() => '?').join(',')})`).all(...uniq);
+}
 
 // چه کسانی مجازند یک درخواست را ببینند:
 // درخواست‌دهنده، هرکس روی آن اقدامی ثبت کرده، مسئولِ مرحلهٔ فعلی،
@@ -202,7 +333,16 @@ function requestDetail(id, userId) {
     WHERE a.request_id = ? ORDER BY a.id`).all(req_.template_id, id);
   const cur = steps.find(s => s.step_order === req_.current_step);
   const can_act = req_.status === 'in_progress' && cur && cur.approvers.includes(userId);
-  return { ...req_, steps, actions, can_act };
+  // [پیوست‌ها] اطلاعات همهٔ فایل‌های ارجاع‌داده‌شده (فرم + پیوستِ اقدام‌ها + ضمیمهٔ فرآیند)
+  let tplAtt = [];
+  try { tplAtt = JSON.parse(db.prepare('SELECT attachments FROM workflow_templates WHERE id = ?').get(req_.template_id)?.attachments || '[]'); } catch {}
+  const actionAtt = actions.flatMap(a => { try { return JSON.parse(a.attachments || '[]'); } catch { return []; } });
+  const files = filesMetaByIds([
+    ...fileIdsInForm(req_.form_schema, req_.form_data),
+    ...actionAtt,
+    ...tplAtt.map(Number),
+  ]);
+  return { ...req_, steps, actions, can_act, files };
 }
 
 // [مورد ۱] آیا این کاربر مجاز به دیدن/استفادهٔ این فرآیند است؟
@@ -326,8 +466,9 @@ function templateExtras(body, prev = {}) {
     scope_dept_ids: body.scope_dept_ids !== undefined
       ? JSON.stringify((Array.isArray(body.scope_dept_ids) ? body.scope_dept_ids : []).map(Number).filter(Boolean))
       : (prev.scope_dept_ids ?? '[]'),
+    // [مورد ۲] فایل‌های ضمیمهٔ فرآیند — عکس یا هر سند دیگر (فقط idهای معتبر ذخیره می‌شوند)
     attachments: body.attachments !== undefined
-      ? JSON.stringify((Array.isArray(body.attachments) ? body.attachments : []).map(Number).filter(Boolean))
+      ? JSON.stringify(normalizeFileIds(body.attachments))
       : (prev.attachments ?? '[]'),
     total_deadline_hours: body.total_deadline_hours !== undefined ? num(body.total_deadline_hours, 0) : (prev.total_deadline_hours ?? 0),
     final_task_enabled: body.final_task_enabled !== undefined ? (body.final_task_enabled ? 1 : 0) : (prev.final_task_enabled ?? 0),
@@ -409,6 +550,14 @@ r.post('/requests', (req, res) => {
   const tpl = db.prepare('SELECT * FROM workflow_templates WHERE id = ? AND is_active = 1').get(template_id);
   if (!tpl) return res.status(404).json({ error: 'فرآیند یافت نشد' });
   if (!title) return res.status(400).json({ error: 'عنوان الزامی است' });
+  // [پیوست‌ها] مقدارِ فیلدهای فایلی همیشه آرایه‌ای از idهای معتبر ذخیره می‌شود
+  {
+    let schema = [];
+    try { schema = JSON.parse(tpl.form_schema || '[]'); } catch {}
+    for (const f of Array.isArray(schema) ? schema : []) {
+      if (f && FILE_FIELD_TYPES.has(f.type)) form_data[f.key] = normalizeFileIds(fieldFileIds(form_data?.[f.key]));
+    }
+  }
   const steps = getSteps(tpl.id);
   if (!steps.length) return res.status(400).json({ error: 'این فرآیند مرحله‌ای ندارد' });
   const first = steps[0];
@@ -436,7 +585,7 @@ r.get('/requests/inbox', (req, res) => {
   const inbox = open.filter(rq => {
     const step = currentStepOf(rq);
     return step && resolveApprovers(step, rq.requester_id).includes(req.user.id);
-  }).map(rq => ({ ...rq, step_title: currentStepOf(rq)?.title }));
+  }).map(rq => ({ ...rq, step_title: currentStepOf(rq)?.title, attachments_count: attachmentCount(rq) }));
   res.json({ requests: inbox });
 });
 
@@ -445,7 +594,7 @@ r.get('/requests/mine', (req, res) => {
     SELECT r.*, t.name AS template_name FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
     WHERE r.requester_id = ? ORDER BY r.id DESC`).all(req.user.id)
-    .map(rq => ({ ...rq, step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title : null }));
+    .map(rq => ({ ...rq, step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title : null, attachments_count: attachmentCount(rq) }));
   res.json({ requests });
 });
 
@@ -478,7 +627,11 @@ r.get('/requests/all', (req, res) => {
     rows = db.prepare(`${base} WHERE r.requester_id IN (${ph}) OR t.created_by = ?
       ORDER BY r.id DESC LIMIT 500`).all(...allowed, u.id);
   }
-  const requests = rows.map(rq => ({ ...rq, step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title : null }));
+  const requests = rows.map(rq => ({
+    ...rq,
+    step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title : null,
+    attachments_count: attachmentCount(rq),
+  }));
   res.json({ requests, scoped: !canAccessEverywhere(u) });
 });
 
@@ -533,7 +686,7 @@ r.get('/reports', (req, res) => {
     ORDER BY r.id DESC LIMIT 500`).all(...params)
     .map(rq => {
       const acts = db.prepare(`
-        SELECT a.action, a.comment, a.created_at, a.step_order, u.full_name AS actor_name
+        SELECT a.action, a.comment, a.attachments, a.created_at, a.step_order, u.full_name AS actor_name
         FROM workflow_actions a JOIN users u ON u.id = a.actor_id
         WHERE a.request_id = ? ORDER BY a.id`).all(rq.id);
       return {
@@ -541,6 +694,7 @@ r.get('/reports', (req, res) => {
         step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title : null,
         actions: acts,
         approvals_count: acts.filter(a => a.action === 'approve').length,
+        attachments_count: attachmentCount(rq),
       };
     });
   res.json({ requests });
@@ -599,7 +753,8 @@ r.post('/requests/:id/action', (req, res) => {
   const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
   if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
   if (rq.status !== 'in_progress') return res.status(400).json({ error: 'این درخواست بسته شده است' });
-  const { action, comment = '' } = req.body || {};
+  const { action, comment = '', attachments = [] } = req.body || {};
+  const attIds = normalizeFileIds(attachments); // [پیوست‌ها] فایل‌های پیوستِ این اقدام
   const step = currentStepOf(rq);
   const approvers = resolveApprovers(step, rq.requester_id);
   if (!approvers.includes(req.user.id)) return res.status(403).json({ error: 'شما مجاز به اقدام در این مرحله نیستید' });
@@ -610,8 +765,9 @@ r.post('/requests/:id/action', (req, res) => {
   const direct = resolveApprovers(step, rq.requester_id, { withDeputies: false });
   const isDeputy = !direct.includes(req.user.id);
   const finalComment = isDeputy ? `(به نیابت) ${comment}`.trim() : comment;
-  db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, ?, ?, ?, ?)')
-    .run(rq.id, rq.current_step, req.user.id, action, finalComment);
+  db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(rq.id, rq.current_step, req.user.id, action, finalComment, JSON.stringify(attIds));
+  const attNote = attIds.length ? ` (${attIds.length.toLocaleString('fa-IR')} فایل پیوست)` : '';
 
   const tpl = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(rq.template_id);
 
@@ -620,7 +776,7 @@ r.post('/requests/:id/action', (req, res) => {
     notifyUsers([rq.requester_id], {
       type: 'workflow',
       title: `درخواست رد شد: ${tpl.name}`,
-      body: `«${rq.title}» در مرحله «${step.title}» توسط ${req.user.full_name} رد شد${comment ? ' — ' + comment : ''}`,
+      body: `«${rq.title}» در مرحله «${step.title}» توسط ${req.user.full_name} رد شد${comment ? ' — ' + comment : ''}${attNote}`,
       link: `/cartable/${rq.id}`,
     });
     return res.json({ ok: true, status: 'rejected' });
@@ -674,10 +830,45 @@ r.post('/requests/:id/action', (req, res) => {
   notifyUsers([rq.requester_id], {
     type: 'workflow',
     title: `پیشرفت درخواست: ${tpl.name}`,
-    body: `«${rq.title}» در مرحله «${step.title}» تایید شد و به «${next.title}» رفت`,
+    body: `«${rq.title}» در مرحله «${step.title}» تایید شد و به «${next.title}» رفت${attNote}`,
     link: `/cartable/${rq.id}`,
   });
   res.json({ ok: true, status: 'in_progress' });
+});
+
+// [پیوست‌ها] ثبت یادداشت و/یا پیوستِ فایل بدون تغییرِ مرحله.
+// برای همهٔ افرادِ درگیر در سلسله‌مراتب: درخواست‌دهنده، تاییدکنندهٔ مرحلهٔ فعلی،
+// هرکسی که قبلاً اقدامی ثبت کرده، مدیرِ واحد و مدیر سامانه (همان قاعدهٔ canViewRequest).
+r.post('/requests/:id/comment', (req, res) => {
+  const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  if (!canViewRequest(req.user, rq)) return res.status(403).json({ error: 'شما مجاز به اقدام روی این درخواست نیستید' });
+  const { comment = '', attachments = [] } = req.body || {};
+  const text = String(comment || '').trim();
+  const attIds = normalizeFileIds(attachments);
+  if (!text && !attIds.length) return res.status(400).json({ error: 'یادداشت یا فایل پیوست الزامی است' });
+
+  db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(rq.id, rq.current_step, req.user.id, 'comment', text, JSON.stringify(attIds));
+
+  // اطلاع به درخواست‌دهنده و مسئولان مرحلهٔ فعلی (جز خودِ ثبت‌کننده)
+  const tpl = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(rq.template_id);
+  const targets = new Set([rq.requester_id]);
+  if (rq.status === 'in_progress') {
+    const step = currentStepOf(rq);
+    if (step) resolveApprovers(step, rq.requester_id).forEach(id => targets.add(id));
+  }
+  targets.delete(req.user.id);
+  if (targets.size) {
+    const attNote = attIds.length ? ` — ${attIds.length.toLocaleString('fa-IR')} فایل پیوست` : '';
+    notifyUsers([...targets], {
+      type: 'workflow',
+      title: `یادداشت جدید: ${tpl?.name || 'درخواست'}`,
+      body: `${req.user.full_name} روی «${rq.title}» یادداشت/پیوست ثبت کرد${text ? ' — ' + text.slice(0, 120) : ''}${attNote}`,
+      link: `/cartable/${rq.id}`,
+    });
+  }
+  res.json({ ok: true, attachments: attIds });
 });
 
 // [مورد ۷] ساخت دستیِ تسک از یک درخواست (توسط مدیرِ مجاز یا سازنده/مسئول)
