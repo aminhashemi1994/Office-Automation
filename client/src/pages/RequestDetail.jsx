@@ -161,8 +161,9 @@ export default function RequestDetail() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <b>تاریخچه اقدامات و پیوست‌ها</b>
               {/* [پیوست‌ها] هر فردِ درگیر در این سلسله‌مراتب می‌تواند فایل پیوست کند */}
-              <button className="btn btn-ghost btn-sm" onClick={() => setNote({ comment: '', attachments: [] })}>
-                <Paperclip size={14} /> افزودن یادداشت / پیوست فایل
+              <button className="btn btn-ghost btn-sm" onClick={() => setNote({ comment: '', attachments: [] })}
+                title={req.can_attach_note ? 'ثبت یادداشت و پیوست فایل' : 'در این فرآیند فقط یادداشت متنی مجاز است'}>
+                <Paperclip size={14} /> {req.can_attach_note ? 'افزودن یادداشت / پیوست فایل' : 'افزودن یادداشت'}
               </button>
             </div>
             {req.actions.map(a => {
@@ -282,17 +283,23 @@ export default function RequestDetail() {
             <textarea className="input" value={comment} onChange={e => setComment(e.target.value)} autoFocus
               placeholder={confirm === 'reject' ? 'دلیل رد درخواست…' : 'توضیحات تکمیلی…'} />
           </Field>
-          {/* [پیوست‌ها] تاییدکننده هم می‌تواند سند پیوست کند */}
-          <Field label="پیوست فایل (اختیاری)"
-            hint="هر نوع فایلی: عکس، PDF، Word، Excel، فایل فشرده و … (هر فایل تا ۲۵ مگابایت)">
-            <AttachmentPicker value={actionFiles} onChange={setActionFiles} />
-          </Field>
+          {/* [پیوست‌ها] تاییدکننده هم می‌تواند سند پیوست کند — اگر در این فرآیند/مرحله مجاز باشد */}
+          {req.can_attach_action ? (
+            <Field label="پیوست فایل (اختیاری)"
+              hint="هر نوع فایلی: عکس، PDF، Word، Excel، فایل فشرده و … (هر فایل تا ۲۵ مگابایت)">
+              <AttachmentPicker value={actionFiles} onChange={setActionFiles} />
+            </Field>
+          ) : (
+            <div style={{ fontSize: 12.3, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Paperclip size={13} /> پیوست فایل در این مرحله مجاز نیست.
+            </div>
+          )}
         </Modal>
       )}
 
       {/* [پیوست‌ها] یادداشت/پیوست بدون تغییر مرحله — برای افرادِ درگیر در سلسله‌مراتب */}
       {note && (
-        <Modal title="افزودن یادداشت / پیوست فایل" onClose={() => setNote(null)}
+        <Modal title={req.can_attach_note ? 'افزودن یادداشت / پیوست فایل' : 'افزودن یادداشت'} onClose={() => setNote(null)}
           footer={<>
             <button className="btn btn-ghost" onClick={() => setNote(null)}>انصراف</button>
             <button className="btn btn-primary" disabled={busy || (!note.comment.trim() && !note.attachments.length)}
@@ -306,10 +313,16 @@ export default function RequestDetail() {
               placeholder="توضیح دربارهٔ فایل پیوست…"
               onChange={e => setNote(n => ({ ...n, comment: e.target.value }))} />
           </Field>
-          <Field label="پیوست فایل"
-            hint="هر نوع فایلی: عکس، PDF، Word، Excel، فایل فشرده و … (هر فایل تا ۲۵ مگابایت)">
-            <AttachmentPicker value={note.attachments} onChange={v => setNote(n => ({ ...n, attachments: v }))} />
-          </Field>
+          {req.can_attach_note ? (
+            <Field label="پیوست فایل"
+              hint="هر نوع فایلی: عکس، PDF، Word، Excel، فایل فشرده و … (هر فایل تا ۲۵ مگابایت)">
+              <AttachmentPicker value={note.attachments} onChange={v => setNote(n => ({ ...n, attachments: v }))} />
+            </Field>
+          ) : (
+            <div style={{ fontSize: 12.3, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Paperclip size={13} /> پیوست فایل در این فرآیند مجاز نیست؛ فقط یادداشت متنی ثبت می‌شود.
+            </div>
+          )}
         </Modal>
       )}
     </div>

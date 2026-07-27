@@ -248,6 +248,10 @@ try { db.exec("ALTER TABLE workflow_templates ADD COLUMN scope_dept_ids TEXT DEF
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN attachments TEXT DEFAULT '[]'"); } catch {}
 // [پیوست اقدام] فایل‌هایی که افرادِ سلسله‌مراتب هنگام تایید/رد/یادداشت پیوست می‌کنند — آرایهٔ JSON از file id
 try { db.exec("ALTER TABLE workflow_actions ADD COLUMN attachments TEXT DEFAULT '[]'"); } catch {}
+// [پیوست اقدام] آیا در این فرآیند، افرادِ سلسله‌مراتب اجازهٔ پیوست فایل دارند؟ (پیش‌فرض: بله)
+try { db.exec("ALTER TABLE workflow_templates ADD COLUMN allow_attachments INTEGER DEFAULT 1"); } catch {}
+// [پیوست اقدام] آیا در این مرحلهٔ مشخص، تاییدکننده اجازهٔ پیوست فایل دارد؟ (پیش‌فرض: بله)
+try { db.exec("ALTER TABLE workflow_steps ADD COLUMN allow_attachments INTEGER DEFAULT 1"); } catch {}
 // [مورد ۳] مهلت کلِ تایید (ساعت) — می‌تواند برابر جمع مهلت مراحل تنظیم شود
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN total_deadline_hours INTEGER DEFAULT 0"); } catch {}
 // [مورد ۷] پس از تایید نهایی، تسک ساخته شود؟ + مسئول و مهلت آن
@@ -294,6 +298,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
     letterhead_address: '',
     letterhead_footer: 'این سند از سامانه اتوماسیون اداری صادر شده و اعتبار آن با کد رهگیری در سامانه قابل استعلام است.',
     logo_path: '',
+    // [پیوست‌ها] کلید سراسری: اگر '0' شود، پیوست فایل در همهٔ فرآیندها غیرفعال می‌شود
+    attachments_enabled: '1',
   };
   const ins = db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(defaults)) ins.run(k, v);

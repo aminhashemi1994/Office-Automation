@@ -72,7 +72,13 @@ function attachmentUpload(req, res, next) {
 }
 
 // آپلود یک یا چند فایل ضمیمه. نام فیلد آزاد است (file / files / image — برای سازگاری با نسخهٔ قبل).
-r.post('/upload', attachmentUpload, (req, res) => {
+r.post('/upload', (req, res, next) => {
+  // کلید سراسری خاموش باشد، هیچ فایلی پذیرفته نمی‌شود
+  if (!attachmentsEnabledGlobally()) {
+    return res.status(403).json({ error: 'پیوست فایل در سامانه غیرفعال شده است (تنظیمات سازمان)' });
+  }
+  next();
+}, attachmentUpload, (req, res) => {
   const files = req.files || [];
   if (!files.length) return res.status(400).json({ error: 'فایلی ارسال نشد' });
   const ins = db.prepare('INSERT INTO files (stored_name, original_name, mime, size, uploader_id) VALUES (?, ?, ?, ?, ?)');
@@ -125,6 +131,24 @@ r.get('/files/:id', (req, res) => {
   try { res.setHeader('Content-Length', fs.statSync(p).size); } catch {}
   fs.createReadStream(p).pipe(res);
 });
+
+// ---------- [پیوست‌ها] کنترل «کجا می‌توان فایل پیوست کرد» ----------
+// سه لایه، از کلی به جزئی:
+//   ۱) کلید سراسریِ سامانه (تنظیمات): attachments_enabled
+//   ۲) سطح فرآیند: workflow_templates.allow_attachments
+//   ۳) سطح مرحله:  workflow_steps.allow_attachments
+// همهٔ پیش‌فرض‌ها «فعال» است؛ خاموش‌کردنِ هر لایه، لایه‌های پایین‌تر را هم خاموش می‌کند.
+export function attachmentsEnabledGlobally() {
+  return db.prepare("SELECT value FROM app_settings WHERE key = 'attachments_enabled'").get()?.value !== '0';
+}
+
+// اجازهٔ پیوست برای «اقدامِ» یک مرحله (step = null یعنی یادداشت/پیوستِ آزاد، بی‌وابسته به مرحله)
+function canAttach(tpl, step) {
+  if (!attachmentsEnabledGlobally()) return false;
+  if (tpl && tpl.allow_attachments === 0) return false;
+  if (step && step.allow_attachments === 0) return false;
+  return true;
+}
 
 // شناسه‌های فایلِ ورودی را پاک‌سازی می‌کند: فقط idهایی که واقعاً در جدول files وجود دارند
 function normalizeFileIds(value) {
@@ -342,7 +366,11 @@ function requestDetail(id, userId) {
     ...actionAtt,
     ...tplAtt.map(Number),
   ]);
-  return { ...req_, steps, actions, can_act, files };
+  // [پیوست‌ها] آیا کاربر اجازهٔ پیوست دارد؟ (کلید سراسری ← تنظیم فرآیند ← تنظیم مرحله)
+  const tplRow = db.prepare('SELECT allow_attachments FROM workflow_templates WHERE id = ?').get(req_.template_id);
+  const can_attach_action = canAttach(tplRow, cur || null);                 // همراهِ تایید/رد/عبور
+  const can_attach_note = canAttach(tplRow, can_act ? cur : null);           // یادداشت/پیوستِ آزاد
+  return { ...req_, steps, actions, can_act, files, can_attach_action, can_attach_note };
 }
 
 // [مورد ۱] آیا این کاربر مجاز به دیدن/استفادهٔ این فرآیند است؟
@@ -439,8 +467,8 @@ r.get('/templates/:id/preview', (req, res) => {
 function insertSteps(templateId, steps) {
   const ins = db.prepare(`INSERT INTO workflow_steps
     (template_id, step_order, title, approver_type, approver_id, approver_role, deadline_hours, is_optional, alt_approvers, requires_signature, notify_approver,
-     create_task, task_assignee_type, task_assignee_id, task_deadline_hours, task_title, task_notify)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+     create_task, task_assignee_type, task_assignee_id, task_deadline_hours, task_title, task_notify, allow_attachments)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   steps.forEach((s, i) => {
     const alts = Array.isArray(s.alt_approvers) ? s.alt_approvers
       .filter(a => a && a.approver_type)
@@ -455,7 +483,9 @@ function insertSteps(templateId, steps) {
       s.task_assignee_type === 'user' ? (s.task_assignee_id || null) : null,
       Number(s.task_deadline_hours) || 0,
       String(s.task_title || ''),
-      s.task_notify === 0 || s.task_notify === false ? 0 : 1);
+      s.task_notify === 0 || s.task_notify === false ? 0 : 1,
+      // [پیوست‌ها] اجازهٔ پیوست فایل در این مرحله (پیش‌فرض: مجاز)
+      s.allow_attachments === 0 || s.allow_attachments === false ? 0 : 1);
   });
 }
 
@@ -476,6 +506,8 @@ function templateExtras(body, prev = {}) {
     final_task_assignee_id: body.final_task_assignee_id !== undefined ? (body.final_task_assignee_id || null) : (prev.final_task_assignee_id ?? null),
     final_task_deadline_hours: body.final_task_deadline_hours !== undefined ? num(body.final_task_deadline_hours, 0) : (prev.final_task_deadline_hours ?? 0),
     final_task_notify: body.final_task_notify !== undefined ? (body.final_task_notify ? 1 : 0) : (prev.final_task_notify ?? 1),
+    // [پیوست‌ها] اجازهٔ پیوست فایل توسط افرادِ سلسله‌مراتب در این فرآیند (پیش‌فرض: مجاز)
+    allow_attachments: body.allow_attachments !== undefined ? (body.allow_attachments ? 1 : 0) : (prev.allow_attachments ?? 1),
   };
 }
 
@@ -487,12 +519,14 @@ r.post('/templates', (req, res) => {
   const ex = templateExtras(req.body || {});
   const result = db.prepare(`INSERT INTO workflow_templates
     (name, description, title_placeholder, form_schema, notify_requester_on_final, requester_signature, created_by,
-     scope_dept_ids, attachments, total_deadline_hours, final_task_enabled, final_task_assignee_type, final_task_assignee_id, final_task_deadline_hours, final_task_notify)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     scope_dept_ids, attachments, total_deadline_hours, final_task_enabled, final_task_assignee_type, final_task_assignee_id, final_task_deadline_hours, final_task_notify,
+     allow_attachments)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(name, description, title_placeholder, JSON.stringify(form_schema),
       notify_requester_on_final ? 1 : 0, requester_signature ? 1 : 0, req.user.id,
       ex.scope_dept_ids, ex.attachments, ex.total_deadline_hours, ex.final_task_enabled,
-      ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify);
+      ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify,
+      ex.allow_attachments);
   insertSteps(result.lastInsertRowid, steps);
   res.json({ id: result.lastInsertRowid });
 });
@@ -510,7 +544,8 @@ r.put('/templates/:id', (req, res) => {
   db.prepare(`UPDATE workflow_templates SET name = ?, description = ?, title_placeholder = ?, form_schema = ?,
     is_active = ?, notify_requester_on_final = ?, requester_signature = ?,
     scope_dept_ids = ?, attachments = ?, total_deadline_hours = ?, final_task_enabled = ?,
-    final_task_assignee_type = ?, final_task_assignee_id = ?, final_task_deadline_hours = ?, final_task_notify = ? WHERE id = ?`)
+    final_task_assignee_type = ?, final_task_assignee_id = ?, final_task_deadline_hours = ?, final_task_notify = ?,
+    allow_attachments = ? WHERE id = ?`)
     .run(name ?? t.name, description ?? t.description,
       title_placeholder ?? t.title_placeholder,
       form_schema !== undefined ? JSON.stringify(form_schema) : t.form_schema,
@@ -518,7 +553,8 @@ r.put('/templates/:id', (req, res) => {
       notify_requester_on_final !== undefined ? (notify_requester_on_final ? 1 : 0) : t.notify_requester_on_final,
       requester_signature !== undefined ? (requester_signature ? 1 : 0) : t.requester_signature,
       ex.scope_dept_ids, ex.attachments, ex.total_deadline_hours, ex.final_task_enabled,
-      ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify, t.id);
+      ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify,
+      ex.allow_attachments, t.id);
   if (steps) {
     const hasOpen = db.prepare("SELECT 1 FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").get(t.id);
     if (hasOpen) return res.status(400).json({ error: 'تا زمانی که درخواست در جریان دارد، مراحل قابل تغییر نیست' });
@@ -760,6 +796,13 @@ r.post('/requests/:id/action', (req, res) => {
   if (!approvers.includes(req.user.id)) return res.status(403).json({ error: 'شما مجاز به اقدام در این مرحله نیستید' });
   if (!['approve', 'reject', 'skip'].includes(action)) return res.status(400).json({ error: 'اقدام نامعتبر' });
   if (action === 'skip' && !step.is_optional) return res.status(400).json({ error: 'این مرحله الزامی است و قابل عبور نیست' });
+  // [پیوست‌ها] فقط اگر در این فرآیند/مرحله مجاز باشد
+  if (attIds.length) {
+    const tplRow = db.prepare('SELECT allow_attachments FROM workflow_templates WHERE id = ?').get(rq.template_id);
+    if (!canAttach(tplRow, step)) {
+      return res.status(400).json({ error: 'پیوست فایل در این مرحله مجاز نیست' });
+    }
+  }
 
   // اگر کاربر تاییدکنندهٔ مستقیم نبوده و فقط به‌واسطهٔ نیابت اقدام می‌کند، در سابقه ثبت شود
   const direct = resolveApprovers(step, rq.requester_id, { withDeputies: false });
@@ -847,6 +890,17 @@ r.post('/requests/:id/comment', (req, res) => {
   const text = String(comment || '').trim();
   const attIds = normalizeFileIds(attachments);
   if (!text && !attIds.length) return res.status(400).json({ error: 'یادداشت یا فایل پیوست الزامی است' });
+  // [پیوست‌ها] یادداشتِ متنی همیشه آزاد است؛ پیوستِ فایل فقط اگر در این فرآیند مجاز باشد
+  if (attIds.length) {
+    const tplRow = db.prepare('SELECT allow_attachments FROM workflow_templates WHERE id = ?').get(rq.template_id);
+    // اگر ثبت‌کننده همان تاییدکنندهٔ مرحلهٔ فعلی است، محدودیتِ آن مرحله هم اعمال می‌شود
+    // (تا مرحلهٔ «غیرمجاز» از راهِ یادداشت دور زده نشود)
+    const step = rq.status === 'in_progress' ? currentStepOf(rq) : null;
+    const asCurrentApprover = step && resolveApprovers(step, rq.requester_id).includes(req.user.id);
+    if (!canAttach(tplRow, asCurrentApprover ? step : null)) {
+      return res.status(400).json({ error: 'پیوست فایل در این فرآیند/مرحله مجاز نیست' });
+    }
+  }
 
   db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments) VALUES (?, ?, ?, ?, ?, ?)')
     .run(rq.id, rq.current_step, req.user.id, 'comment', text, JSON.stringify(attIds));

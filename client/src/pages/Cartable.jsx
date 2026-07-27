@@ -143,7 +143,16 @@ export const toFileIds = toIds;
 export const toImageIds = toIds; // نام قبلی — برای سازگاری
 
 function FormFileField({ field, value, onChange }) {
+  const { settings } = useStore();
   const onlyImages = field.type === 'image';
+  // [پیوست‌ها] کلید سراسری در تنظیمات سازمان
+  if (settings?.attachments_enabled === '0') {
+    return (
+      <div style={{ fontSize: 12.3, color: 'var(--text-3)' }}>
+        پیوست فایل در سامانه غیرفعال شده است؛ برای فعال‌سازی با مدیر سامانه تماس بگیرید.
+      </div>
+    );
+  }
   return (
     <AttachmentPicker
       value={value}
@@ -157,7 +166,8 @@ function FormFileField({ field, value, onChange }) {
 }
 
 function NewRequestModal({ templates, onClose, onDone }) {
-  const { toast } = useStore();
+  const { toast, settings } = useStore();
+  const attOff = settings?.attachments_enabled === '0'; // [پیوست‌ها] کلید سراسری
   const [tplId, setTplId] = useState(templates[0]?.id || '');
   const [title, setTitle] = useState('');
   const [data, setData] = useState({});
@@ -199,7 +209,7 @@ function NewRequestModal({ templates, onClose, onDone }) {
         const missing = f.type === 'time_range'
           ? (!v || !v.start || !v.end)
           : (f.type === 'image' || f.type === 'file')
-          ? toIds(v).length === 0
+          ? (!attOff && toIds(v).length === 0) // اگر پیوست کلاً غیرفعال است، الزام را نادیده بگیر
           : !String(v ?? '').trim();
         if (missing) return toast(`«${f.label}» الزامی است`, 'error');
       }

@@ -10,6 +10,8 @@ import { BRANDING_DIR } from '../config.js';
 const r = Router();
 
 const EDITABLE_KEYS = ['company_name', 'company_subtitle', 'letterhead_address', 'letterhead_footer'];
+// کلیدهای دو‌حالته ('1'/'0') — [پیوست‌ها] کلید سراسریِ اجازهٔ پیوست فایل در فرآیندها
+const BOOL_KEYS = ['attachments_enabled'];
 
 const logoUpload = multer({
   storage: multer.diskStorage({
@@ -38,6 +40,13 @@ r.put('/', requirePerm('settings.manage'), (req, res) => {
   const upd = db.prepare('UPDATE app_settings SET value = ? WHERE key = ?');
   for (const k of EDITABLE_KEYS) {
     if (body[k] !== undefined) upd.run(String(body[k]).slice(0, 2000), k);
+  }
+  const ins = db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)');
+  for (const k of BOOL_KEYS) {
+    if (body[k] === undefined) continue;
+    const v = (body[k] === true || body[k] === 1 || body[k] === '1') ? '1' : '0';
+    ins.run(k, v);
+    upd.run(v, k);
   }
   res.json({ ok: true, settings: readSettings() });
 });

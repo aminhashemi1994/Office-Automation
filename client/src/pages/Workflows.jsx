@@ -162,7 +162,7 @@ function parseAlts(v) {
 }
 
 function TemplateModal({ tpl, onClose, onDone }) {
-  const { departments, users, toast } = useStore();
+  const { departments, users, settings, toast } = useStore();
 
   // نمایش دقیق فردی که در هر مرحله تایید می‌کند
   const approverPreview = (s) => {
@@ -199,8 +199,9 @@ function TemplateModal({ tpl, onClose, onDone }) {
     ...s,
     alt_approvers: parseAlts(s.alt_approvers),
     requires_signature: s.requires_signature === 0 ? 0 : 1,
+    allow_attachments: s.allow_attachments === 0 ? 0 : 1, // [پیوست‌ها]
   })) || [
-    { title: 'تایید سرگروه واحد', approver_type: 'requester_manager', deadline_hours: 24, alt_approvers: [], requires_signature: 1 },
+    { title: 'تایید سرگروه واحد', approver_type: 'requester_manager', deadline_hours: 24, alt_approvers: [], requires_signature: 1, allow_attachments: 1 },
   ]);
   const [notifyFinal, setNotifyFinal] = useState(tpl ? tpl.notify_requester_on_final !== 0 : true);
   const [requesterSig, setRequesterSig] = useState(tpl ? tpl.requester_signature !== 0 : true);
@@ -210,6 +211,9 @@ function TemplateModal({ tpl, onClose, onDone }) {
   const [totalDeadline, setTotalDeadline] = useState(tpl?.total_deadline_hours || 0);
   // [مورد ۲] فایل‌های ضمیمهٔ فرآیند — عکس یا هر سند دیگر (آرایه‌ای از file id)
   const [attachments, setAttachments] = useState(() => { try { return JSON.parse(tpl?.attachments || '[]'); } catch { return []; } });
+  // [پیوست‌ها] آیا افرادِ سلسله‌مراتب در این فرآیند می‌توانند فایل پیوست کنند؟
+  const [allowAtt, setAllowAtt] = useState(tpl ? tpl.allow_attachments !== 0 : true);
+  const globalAttOff = settings?.attachments_enabled === '0'; // کلید سراسری در تنظیمات سازمان
   // [مورد ۷] تسک پس از تایید نهایی
   const [finalTask, setFinalTask] = useState({
     enabled: !!tpl?.final_task_enabled,
@@ -254,6 +258,7 @@ function TemplateModal({ tpl, onClose, onDone }) {
         scope_dept_ids: scopeDeptIds.map(Number),
         total_deadline_hours: Number(totalDeadline) || 0,
         attachments: attachments.map(Number),
+        allow_attachments: allowAtt,
         final_task_enabled: finalTask.enabled,
         final_task_assignee_type: finalTask.assignee_type,
         final_task_assignee_id: finalTask.assignee_type === 'user' ? (finalTask.assignee_id || null) : null,
@@ -290,6 +295,18 @@ function TemplateModal({ tpl, onClose, onDone }) {
         </Field>
       </div>
 
+      {/* [پیوست‌ها] اجازهٔ پیوست فایل توسط افرادِ سلسله‌مراتب — کلیدِ کلیِ این فرآیند */}
+      <Field label="پیوست فایل توسط افرادِ سلسله‌مراتب"
+        hint={globalAttOff
+          ? 'توجه: پیوست فایل در تنظیمات سازمان به‌صورت کلی غیرفعال است، پس در هیچ فرآیندی کار نمی‌کند.'
+          : 'اگر «مجاز» باشد، تاییدکنندگانِ مراحل می‌توانند همراه تایید/رد و همچنین در قالب یادداشت، فایل پیوست کنند. با «غیرمجاز» این امکان در همهٔ مراحلِ این فرآیند بسته می‌شود (فیلدهای فایلِ فرمِ درخواست‌دهنده تغییری نمی‌کند).'}>
+        <Segmented value={allowAtt ? 1 : 0} onChange={v => setAllowAtt(!!v)}
+          options={[
+            { value: 1, label: 'مجاز', tone: 'primary', hint: 'افرادِ سلسله‌مراتب می‌توانند فایل پیوست کنند' },
+            { value: 0, label: 'غیرمجاز', hint: 'در هیچ مرحله‌ای امکان پیوست نیست' },
+          ]} />
+      </Field>
+
       {/* [مورد ۱] محدودهٔ واحدهایی که این فرآیند برایشان در دسترس است */}
       <Field label="در دسترس برای کدام واحدها؟"
         hint="هیچ‌کدام انتخاب نشود = برای همهٔ واحدها در دسترس است. در غیر این‌صورت فقط اعضای واحدهای انتخاب‌شده (و مدیرانشان) این فرآیند را می‌بینند.">
@@ -310,12 +327,13 @@ function TemplateModal({ tpl, onClose, onDone }) {
       {/* [مورد ۲] فایل‌های ضمیمهٔ فرآیند (راهنما/نمونه) — عکس یا هر سند دیگر */}
       <Field label="فایل‌های ضمیمهٔ فرآیند (راهنما/نمونه)"
         hint="هر نوع فایلی می‌توانید بگذارید: عکس، PDF، Word، Excel، فایل فشرده و … . این فایل‌ها هنگام ثبت درخواست به کاربر نمایش داده می‌شوند (حداکثر ۲۵ مگابایت برای هر فایل).">
-        <AttachmentPicker value={attachments} onChange={setAttachments} placeholder="انتخاب فایل" label="افزودن فایل" />
+        <AttachmentPicker value={attachments} onChange={setAttachments} placeholder="انتخاب فایل" label="افزودن فایل"
+          disabled={globalAttOff} />
       </Field>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '18px 0 10px' }}>
         <b>مراحل تایید (سلسله‌مراتب)</b>
-        <button className="btn btn-ghost btn-sm" onClick={() => setSteps(s => [...s, { title: '', approver_type: 'requester_manager', deadline_hours: 24, alt_approvers: [], requires_signature: 1 }])}>
+        <button className="btn btn-ghost btn-sm" onClick={() => setSteps(s => [...s, { title: '', approver_type: 'requester_manager', deadline_hours: 24, alt_approvers: [], requires_signature: 1, allow_attachments: 1 }])}>
           <Plus size={14} /> مرحله
         </button>
       </div>
@@ -355,6 +373,19 @@ function TemplateModal({ tpl, onClose, onDone }) {
                 options={[
                   { value: 0, label: 'الزامی', tone: 'primary', hint: 'تایید این مرحله برای ادامه لازم است' },
                   { value: 1, label: 'اختیاری', hint: 'تاییدکننده می‌تواند بدون اظهارنظر عبور دهد' },
+                ]} />
+            </div>
+            {/* [پیوست‌ها] اجازهٔ پیوست فایل در همین مرحله */}
+            <div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 4 }}>
+                پیوست فایل در این مرحله
+                {!allowAtt && <span style={{ color: 'var(--amber)' }}> (در این فرآیند بسته است)</span>}
+              </div>
+              <Segmented size="sm" value={s.allow_attachments === 0 ? 0 : 1}
+                onChange={v => setStep(i, { allow_attachments: v })}
+                options={[
+                  { value: 1, label: 'مجاز', tone: 'primary', hint: 'تاییدکنندهٔ این مرحله می‌تواند فایل پیوست کند' },
+                  { value: 0, label: 'غیرمجاز', hint: 'در این مرحله امکان پیوست فایل نیست' },
                 ]} />
             </div>
           </div>

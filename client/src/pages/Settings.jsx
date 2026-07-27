@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Building2, Image, Trash2, Save, Printer, DatabaseBackup, Download, Plus, ShieldCheck } from 'lucide-react';
+import { Building2, Image, Trash2, Save, Printer, DatabaseBackup, Download, Plus, ShieldCheck, Paperclip } from 'lucide-react';
 import { api, getToken } from '../api.js';
 import { useStore } from '../store.jsx';
-import { Field } from '../components/common.jsx';
+import { Field, Segmented } from '../components/common.jsx';
 import ImageCropper from '../components/ImageCropper.jsx';
 import { printRequest, fmtDateTime, fmtSize } from '../utils.js';
 
@@ -57,6 +57,47 @@ function BackupCard() {
           <button className="icon-btn" style={{ width: 30, height: 30 }} title="حذف" onClick={() => remove(b)}><Trash2 size={14} /></button>
         </div>
       ))}
+    </div>
+  );
+}
+
+// [پیوست‌ها] کلید سراسریِ پیوست فایل در فرآیندها.
+// خاموش‌کردن آن، پیوست را در همهٔ فرآیندها و همهٔ مراحل غیرفعال می‌کند
+// (تنظیمِ ریزتر برای هر فرآیند/مرحله در صفحهٔ «فرآیندهای اداری» است).
+function AttachmentsCard() {
+  const { settings, refreshSettings, toast } = useStore();
+  const [busy, setBusy] = useState(false);
+  const on = settings.attachments_enabled !== '0';
+
+  const change = async (v) => {
+    setBusy(true);
+    try {
+      await api('/settings', { method: 'PUT', body: { attachments_enabled: v ? '1' : '0' } });
+      await refreshSettings();
+      toast(v ? 'پیوست فایل در سامانه فعال شد' : 'پیوست فایل در سامانه غیرفعال شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card card-pad" style={{ marginTop: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <Paperclip size={17} />
+        <b>پیوست فایل در فرآیندها</b>
+        <span style={{ marginInlineStart: 'auto', opacity: busy ? .6 : 1 }}>
+          <Segmented size="sm" value={on ? 1 : 0} onChange={v => change(!!v)}
+            options={[
+              { value: 1, label: 'فعال', tone: 'primary', hint: 'کاربران و تاییدکنندگان می‌توانند فایل پیوست کنند' },
+              { value: 0, label: 'غیرفعال', hint: 'پیوست فایل در کل سامانه بسته می‌شود' },
+            ]} />
+        </span>
+      </div>
+      <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.8, margin: 0 }}>
+        این کلید، پیوست فایل را به‌صورت <b>کلی</b> برای همهٔ فرآیندها روشن/خاموش می‌کند: هم فیلدهای فایلِ فرم‌ها و هم
+        پیوستِ افرادِ سلسله‌مراتب (تایید/رد/یادداشت). برای تنظیم دقیق‌تر — اینکه در کدام فرآیند و کدام مرحله
+        پیوست مجاز باشد — به صفحهٔ «فرآیندهای اداری» و ویرایش همان فرآیند بروید.
+        {!on && <span style={{ color: 'var(--red)', fontWeight: 700 }}> در حال حاضر پیوست فایل در کل سامانه غیرفعال است.</span>}
+      </p>
     </div>
   );
 }
@@ -172,6 +213,8 @@ export default function Settings() {
           </p>
         </div>
       </div>
+
+      <AttachmentsCard />
 
       <BackupCard />
 
