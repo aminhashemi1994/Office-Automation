@@ -9,9 +9,13 @@ import { BRANDING_DIR } from '../config.js';
 
 const r = Router();
 
-const EDITABLE_KEYS = ['company_name', 'company_subtitle', 'letterhead_address', 'letterhead_footer'];
-// کلیدهای دو‌حالته ('1'/'0') — [پیوست‌ها] کلید سراسریِ اجازهٔ پیوست فایل در فرآیندها
-const BOOL_KEYS = ['attachments_enabled'];
+const EDITABLE_KEYS = ['company_name', 'company_subtitle', 'letterhead_address', 'letterhead_footer',
+  'crm_lost_reasons', 'crm_tender_checklist', 'crm_stale_customer_days',
+  'sms_provider', 'sms_api_url', 'sms_api_key', 'sms_sender'];
+// کلیدهای دو‌حالته ('1'/'0') — [پیوست‌ها] کلید سراسریِ اجازهٔ پیوست فایل، [CRM] فعال‌بودن ماژول
+const BOOL_KEYS = ['attachments_enabled', 'crm_enabled', 'sms_enabled'];
+// کلیدهایی که مقدارشان آرایهٔ JSON از id است — [CRM] واحدهای مجاز به کار با CRM
+const ID_LIST_KEYS = ['crm_dept_ids', 'crm_full_dept_ids'];
 
 const logoUpload = multer({
   storage: multer.diskStorage({
@@ -45,6 +49,12 @@ r.put('/', requirePerm('settings.manage'), (req, res) => {
   for (const k of BOOL_KEYS) {
     if (body[k] === undefined) continue;
     const v = (body[k] === true || body[k] === 1 || body[k] === '1') ? '1' : '0';
+    ins.run(k, v);
+    upd.run(v, k);
+  }
+  for (const k of ID_LIST_KEYS) {
+    if (body[k] === undefined) continue;
+    const v = JSON.stringify((Array.isArray(body[k]) ? body[k] : []).map(Number).filter(Boolean));
     ins.run(k, v);
     upd.run(v, k);
   }

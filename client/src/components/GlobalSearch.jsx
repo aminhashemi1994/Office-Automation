@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, MessageSquare, Inbox, ListTodo, User, Building2, FileText } from 'lucide-react';
+import { Search, MessageSquare, Inbox, ListTodo, User, Building2, FileText, Handshake, Gavel } from 'lucide-react';
 import { api, fileUrl } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtRelative, fmtSize } from '../utils.js';
@@ -10,10 +10,19 @@ const GROUPS = [
   ['requests', 'درخواست‌های کارتابل', Inbox],
   ['tasks', 'تسک‌ها', ListTodo],
   ['messages', 'پیام‌ها', MessageSquare],
+  ['customers', 'مشتریان', Handshake],
+  ['tenders', 'مناقصات', Gavel],
   ['users', 'کاربران', User],
   ['files', 'فایل‌ها', FileText],
   ['departments', 'واحدها', Building2],
 ];
+
+// وضعیت‌های مناقصه — همان برچسب‌های صفحهٔ مناقصات
+const TENDER_FA = {
+  identified: 'شناسایی‌شده', reviewing: 'در حال بررسی', docs: 'اسناد دریافت شد',
+  preparing: 'آماده‌سازی', submitted: 'ارسال شد', opened: 'بازگشایی شد',
+  won: 'برنده', lost: 'بازنده', cancelled: 'لغو شده', withdrawn: 'انصراف',
+};
 
 export default function GlobalSearch() {
   const { user, toast } = useStore();
@@ -120,6 +129,29 @@ export default function GlobalSearch() {
               <div style={{ fontSize: 11.5, color: 'var(--text-2)' }}>{fmtSize(item.size)}{item.uploader_name ? ` · ${item.uploader_name}` : ''}</div>
             </div>
           </a>
+        );
+      case 'customers':
+        return (
+          <div key={`c${item.id}`} className="notif-item" onClick={() => go(() => navigate('/crm'))}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 13.3 }}>{item.name}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                {[item.city, item.phone, item.owner_name].filter(Boolean).join(' · ') || 'مشتری'}
+              </div>
+            </div>
+          </div>
+        );
+      case 'tenders':
+        return (
+          <div key={`tn${item.id}`} className="notif-item" onClick={() => go(() => navigate('/crm'))}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 13.3 }}>{item.title}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                {[item.tender_no && `شماره ${item.tender_no}`, item.organization,
+                  TENDER_FA[item.status] || item.status].filter(Boolean).join(' · ')}
+              </div>
+            </div>
+          </div>
         );
       case 'departments':
         return (

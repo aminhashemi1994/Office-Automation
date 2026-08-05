@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS workflow_requests (
   requester_id INTEGER NOT NULL REFERENCES users(id),
   title TEXT NOT NULL,
   form_data TEXT DEFAULT '{}',
-  status TEXT DEFAULT 'in_progress', -- in_progress | approved | rejected | cancelled
+  status TEXT DEFAULT 'in_progress', -- in_progress | awaiting_requester | returned | approved | rejected | cancelled
   current_step INTEGER DEFAULT 1,
   step_due_at TEXT,
   last_reminded_at TEXT,
@@ -277,6 +277,21 @@ try { db.exec("ALTER TABLE workflow_templates ADD COLUMN final_task_notify INTEG
 // [تنظیمات] فعال‌بودن پیش‌فرضِ نوتیفیکیشن مرورگر برای هر کاربر (پیش‌فرض روشن)
 try { db.exec("ALTER TABLE users ADD COLUMN notif_enabled INTEGER DEFAULT 1"); } catch {}
 
+// ============================================================================
+//  [تایید نهاییِ درخواست‌دهنده و برگشت درخواست]
+//  status درخواست‌ها یکی از این‌هاست:
+//    in_progress          → در جریانِ سلسله‌مراتب تایید
+//    awaiting_requester   → همهٔ مراحل تایید شده و منتظر «تایید نهاییِ درخواست‌دهنده» است
+//    returned             → برای اصلاح به خودِ درخواست‌دهنده برگشت داده شده (قابل ویرایش و ارسال مجدد)
+//    approved | rejected | cancelled
+// ============================================================================
+// آیا در این فرآیند، بعد از آخرین مرحله، تایید نهایی با خودِ درخواست‌دهنده است؟
+try { db.exec('ALTER TABLE workflow_templates ADD COLUMN requester_final_approval INTEGER DEFAULT 0'); } catch {}
+// آخرین باری که فرمِ درخواست ویرایش شد
+try { db.exec('ALTER TABLE workflow_requests ADD COLUMN edited_at TEXT'); } catch {}
+// وقتی درخواست به درخواست‌دهنده برگشت داده می‌شود، با «ارسال مجدد» از این مرحله ادامه پیدا می‌کند
+try { db.exec('ALTER TABLE workflow_requests ADD COLUMN resume_step INTEGER DEFAULT 1'); } catch {}
+
 // [مورد ۶] اجازهٔ دیدنِ درخواست‌های یک کاربرِ مشخص (تنظیم دستی فردی)
 db.exec(`
 CREATE TABLE IF NOT EXISTS request_view_grants (
@@ -367,6 +382,531 @@ CREATE INDEX IF NOT EXISTS idx_deleg_from ON delegations(from_user, is_active);
 CREATE INDEX IF NOT EXISTS idx_deleg_to ON delegations(to_user, is_active);
 `);
 
+// ============================================================================
+//  CRM — مدیریت ارتباط با مشتری
+//  • مشتری = شرکت/شخصِ طرف حساب، با فیلدهای پایه + هر تعداد «فیلد دلخواه»
+//  • مخاطب = افرادِ رابط هر مشتری (نام، سمت، تلفن، ایمیل، …)
+//  • فعالیت = گزارشِ تماس/جلسه/پیگیری با تاریخِ یادآوری
+//  • فروش = معامله/فرصت فروش با مبلغ و مرحله — پایهٔ گزارش‌های فروش
+//  دسترسی: مدیر سامانه و «واحد مدیریت» همیشه؛ بقیه فقط اگر واحدشان در
+//  تنظیمات سازمان (crm_dept_ids) مجاز شده باشد.
+// ============================================================================
+db.exec(`
+CREATE TABLE IF NOT EXISTS crm_customers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,                 -- نام شرکت / مشتری
+  kind TEXT DEFAULT 'company',        -- company | person
+  status TEXT DEFAULT 'active',       -- lead (سرنخ) | active (مشتری فعال) | inactive (غیرفعال)
+  economic_code TEXT DEFAULT '',      -- کد اقتصادی
+  national_id TEXT DEFAULT '',        -- شناسه ملی / کد ملی
+  phone TEXT DEFAULT '',
+  email TEXT DEFAULT '',
+  website TEXT DEFAULT '',
+  city TEXT DEFAULT '',
+  address TEXT DEFAULT '',
+  postal_code TEXT DEFAULT '',
+  industry TEXT DEFAULT '',           -- حوزهٔ فعالیت
+  source TEXT DEFAULT '',             -- نحوهٔ آشنایی (نمایشگاه، معرفی، تماس ورودی، …)
+  note TEXT DEFAULT '',
+  extra TEXT DEFAULT '{}',            -- فیلدهای دلخواه: {"<key>": "<value>"}
+  owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,   -- کارشناسِ مسئول
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_customers_name ON crm_customers(name);
+
+CREATE TABLE IF NOT EXISTS crm_contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER NOT NULL REFERENCES crm_customers(id) ON DELETE CASCADE,
+  first_name TEXT DEFAULT '',
+  last_name TEXT DEFAULT '',
+  position TEXT DEFAULT '',           -- سمت
+  phone TEXT DEFAULT '',
+  mobile TEXT DEFAULT '',
+  email TEXT DEFAULT '',
+  is_primary INTEGER DEFAULT 0,       -- مخاطب اصلی
+  note TEXT DEFAULT '',
+  extra TEXT DEFAULT '{}',            -- فیلدهای دلخواه مخاطب
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_contacts_cust ON crm_contacts(customer_id);
+
+CREATE TABLE IF NOT EXISTS crm_activities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER NOT NULL REFERENCES crm_customers(id) ON DELETE CASCADE,
+  contact_id INTEGER REFERENCES crm_contacts(id) ON DELETE SET NULL,
+  deal_id INTEGER,                    -- در صورت مرتبط‌بودن با یک معامله
+  type TEXT DEFAULT 'call',           -- call | meeting | email | visit | note
+  subject TEXT DEFAULT '',
+  body TEXT DEFAULT '',               -- شرح گزارش
+  outcome TEXT DEFAULT '',            -- نتیجه
+  happened_at TEXT DEFAULT (datetime('now')),
+  follow_up_at TEXT,                  -- تاریخ پیگیری بعدی (یادآوری)
+  follow_up_done INTEGER DEFAULT 0,
+  attachments TEXT DEFAULT '[]',      -- آرایهٔ JSON از file id
+  user_id INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_act_cust ON crm_activities(customer_id, id);
+CREATE INDEX IF NOT EXISTS idx_crm_act_follow ON crm_activities(follow_up_at, follow_up_done);
+
+CREATE TABLE IF NOT EXISTS crm_deals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER NOT NULL REFERENCES crm_customers(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  amount REAL DEFAULT 0,              -- مبلغ (ریال)
+  currency TEXT DEFAULT 'IRR',
+  stage TEXT DEFAULT 'new',           -- new | quoted | negotiation | won | lost
+  probability INTEGER DEFAULT 0,      -- درصد احتمال موفقیت
+  expected_close TEXT,                -- تاریخ پیش‌بینی‌شدهٔ نهایی‌شدن
+  closed_at TEXT,
+  lost_reason TEXT DEFAULT '',
+  product TEXT DEFAULT '',            -- شرح کالا/خدمات
+  note TEXT DEFAULT '',
+  extra TEXT DEFAULT '{}',
+  owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_deals_cust ON crm_deals(customer_id, id);
+CREATE INDEX IF NOT EXISTS idx_crm_deals_stage ON crm_deals(stage, closed_at);
+
+-- تعریفِ «فیلدهای دلخواه» برای مشتری/مخاطب/معامله (مقدارشان در ستون extra ذخیره می‌شود)
+CREATE TABLE IF NOT EXISTS crm_fields (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity TEXT NOT NULL DEFAULT 'customer', -- customer | contact | deal
+  key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  type TEXT DEFAULT 'text',           -- text | textarea | number | date | select
+  options TEXT DEFAULT '[]',          -- برای select
+  required INTEGER DEFAULT 0,
+  sort_order INTEGER DEFAULT 0,
+  UNIQUE (entity, key)
+);
+
+-- ========================================================================
+--  گزارشِ مرحله‌ایِ معاملات — قلبِ تحلیل عملکرد و پیشنهادِ هوشمند
+--  کارشناس فروش در هر جابه‌جاییِ مرحله می‌نویسد چه شد، چه خوب بود، چه بد بود
+--  و قدم بعدی چیست. این متن‌ها هم برای گزارش‌های مدیریتی و هم برای دستیار
+--  هوشمند (LLM) در آینده خوانده می‌شوند.
+-- ========================================================================
+CREATE TABLE IF NOT EXISTS crm_stage_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deal_id INTEGER REFERENCES crm_deals(id) ON DELETE CASCADE,      -- گزارشِ یک معامله
+  tender_id INTEGER REFERENCES crm_tenders(id) ON DELETE CASCADE,  -- یا گزارشِ یک مناقصه
+  customer_id INTEGER REFERENCES crm_customers(id) ON DELETE CASCADE,
+  from_stage TEXT DEFAULT '',        -- مرحلهٔ قبلی (خالی = اولین گزارش)
+  stage TEXT NOT NULL,               -- مرحله‌ای که معامله به آن رسیده
+  summary TEXT DEFAULT '',           -- چه اتفاقی افتاد
+  went_well TEXT DEFAULT '',         -- چه چیزی خوب پیش رفت
+  went_wrong TEXT DEFAULT '',        -- چه چیزی اشتباه بود / مشکل داشت
+  blockers TEXT DEFAULT '',          -- موانع و ریسک‌ها
+  next_action TEXT DEFAULT '',       -- قدم بعدی
+  confidence INTEGER DEFAULT 0,      -- درصد اطمینان کارشناس به موفقیت
+  user_id INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_sr_deal ON crm_stage_reports(deal_id, id);
+CREATE INDEX IF NOT EXISTS idx_crm_sr_tender ON crm_stage_reports(tender_id, id);
+CREATE INDEX IF NOT EXISTS idx_crm_sr_user ON crm_stage_reports(user_id, created_at);
+
+-- ========================================================================
+--  کالا و خدمات + اقلامِ هر معامله (پیش‌فاکتور)
+--  مبلغِ معامله وقتی قلم داشته باشد از روی اقلام محاسبه می‌شود، نه دستی.
+-- ========================================================================
+CREATE TABLE IF NOT EXISTS crm_products (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT DEFAULT '',              -- کد کالا
+  name TEXT NOT NULL,
+  category TEXT DEFAULT '',
+  unit TEXT DEFAULT 'عدد',           -- واحد شمارش: متر، کیلوگرم، حلقه، …
+  list_price REAL DEFAULT 0,         -- قیمت فهرست (ریال)
+  cost REAL DEFAULT 0,               -- بهای تمام‌شده — برای محاسبهٔ حاشیهٔ سود
+  is_active INTEGER DEFAULT 1,
+  note TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_products_name ON crm_products(name);
+
+CREATE TABLE IF NOT EXISTS crm_deal_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deal_id INTEGER NOT NULL REFERENCES crm_deals(id) ON DELETE CASCADE,
+  product_id INTEGER REFERENCES crm_products(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  unit TEXT DEFAULT 'عدد',
+  qty REAL DEFAULT 1,
+  unit_price REAL DEFAULT 0,
+  discount_pct REAL DEFAULT 0,       -- درصد تخفیف این قلم
+  tax_pct REAL DEFAULT 0,            -- درصد مالیات/عوارض
+  cost REAL DEFAULT 0,               -- بهای تمام‌شدهٔ واحد (کپی از کالا در لحظهٔ ثبت)
+  sort_order INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_crm_deal_items ON crm_deal_items(deal_id, sort_order);
+
+-- ========================================================================
+--  مناقصات
+--  فروش از راه مناقصه منطقِ خودش را دارد: فراخوان، مهلت‌های سخت، پاکات،
+--  تضمین شرکت در مناقصه، بازگشایی و رقبا. این‌ها در «معاملهٔ» معمولی جا نمی‌شوند.
+--  با برنده‌شدن، مناقصه به یک معاملهٔ برنده تبدیل می‌شود تا در آمار فروش بیاید.
+-- ========================================================================
+CREATE TABLE IF NOT EXISTS crm_tenders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tender_no TEXT DEFAULT '',         -- شماره فراخوان / مناقصه
+  title TEXT NOT NULL,
+  customer_id INTEGER REFERENCES crm_customers(id) ON DELETE SET NULL, -- مناقصه‌گزار (اگر در فهرست مشتریان هست)
+  organization TEXT DEFAULT '',      -- نام دستگاه مناقصه‌گزار (اگر مشتری ثبت‌شده نیست)
+  portal TEXT DEFAULT 'setad',       -- setad (ستاد) | own (سامانه اختصاصی) | paper (روزنامه) | other
+  portal_url TEXT DEFAULT '',
+  method TEXT DEFAULT 'public_1',    -- public_1 | public_2 (دو مرحله‌ای) | limited (محدود) | direct (ترک تشریفات)
+  subject TEXT DEFAULT '',           -- موضوع/شرح
+  estimated_amount REAL DEFAULT 0,   -- برآورد کارفرما
+  our_bid_amount REAL DEFAULT 0,     -- مبلغ پیشنهادی ما
+  status TEXT DEFAULT 'identified',  -- identified | reviewing | docs | preparing | submitted | opened | won | lost | cancelled | withdrawn
+  published_at TEXT,                 -- تاریخ انتشار فراخوان
+  docs_deadline TEXT,                -- مهلت دریافت/خرید اسناد
+  submit_deadline TEXT,              -- مهلت ارسال پیشنهاد (حیاتی‌ترین تاریخ)
+  opening_at TEXT,                   -- تاریخ بازگشایی پاکات
+  -- تضمین شرکت در مناقصه (پاکت الف)
+  guarantee_type TEXT DEFAULT '',    -- bank (ضمانت‌نامه بانکی) | cheque | cash | none
+  guarantee_amount REAL DEFAULT 0,
+  guarantee_no TEXT DEFAULT '',
+  guarantee_expires_at TEXT,         -- سررسید ضمانت‌نامه — باید به‌موقع تمدید یا آزاد شود
+  guarantee_released INTEGER DEFAULT 0,
+  -- نتیجه
+  winner_name TEXT DEFAULT '',
+  winner_amount REAL DEFAULT 0,
+  our_rank INTEGER DEFAULT 0,        -- رتبهٔ ما در بازگشایی
+  result_note TEXT DEFAULT '',
+  lost_reason TEXT DEFAULT '',
+  deal_id INTEGER REFERENCES crm_deals(id) ON DELETE SET NULL, -- معاملهٔ ساخته‌شده پس از برد
+  owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  attachments TEXT DEFAULT '[]',     -- اسناد مناقصه (آرایهٔ JSON از file id)
+  note TEXT DEFAULT '',
+  extra TEXT DEFAULT '{}',
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_tenders_status ON crm_tenders(status, submit_deadline);
+CREATE INDEX IF NOT EXISTS idx_crm_tenders_owner ON crm_tenders(owner_id, id);
+
+-- رقبا و مبالغ پیشنهادی‌شان (بعد از بازگشایی) — گنجینهٔ اطلاعات رقابتی
+CREATE TABLE IF NOT EXISTS crm_tender_competitors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tender_id INTEGER NOT NULL REFERENCES crm_tenders(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  amount REAL DEFAULT 0,
+  rank INTEGER DEFAULT 0,
+  is_winner INTEGER DEFAULT 0,
+  note TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_crm_tender_comp ON crm_tender_competitors(tender_id, rank);
+
+-- چک‌لیست مدارک پاکات — جلوگیری از ردصلاحیت به‌خاطر یک مدرکِ جامانده
+CREATE TABLE IF NOT EXISTS crm_tender_checklist (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tender_id INTEGER NOT NULL REFERENCES crm_tenders(id) ON DELETE CASCADE,
+  envelope TEXT DEFAULT 'b',         -- a (تضمین) | b (اسناد و سوابق) | c (پیشنهاد قیمت)
+  title TEXT NOT NULL,
+  required INTEGER DEFAULT 1,
+  done INTEGER DEFAULT 0,
+  note TEXT DEFAULT '',
+  sort_order INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_crm_tender_check ON crm_tender_checklist(tender_id, envelope, sort_order);
+
+-- ========================================================================
+--  گردش موجودی کالا — هر سطر یک ورود (مثبت) یا خروج (منفی) از انبار فروش
+-- ========================================================================
+CREATE TABLE IF NOT EXISTS crm_stock_moves (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES crm_products(id) ON DELETE CASCADE,
+  qty REAL NOT NULL,                 -- مثبت = ورود، منفی = خروج
+  reason TEXT DEFAULT 'manual',      -- purchase | sale | return | adjust | manual
+  deal_id INTEGER REFERENCES crm_deals(id) ON DELETE SET NULL,
+  note TEXT DEFAULT '',
+  user_id INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_stock_moves ON crm_stock_moves(product_id, id);
+
+-- ========================================================================
+--  تمرکز فروش — تیم در هر دوره روی چند محصول/بازار مشخص متمرکز می‌شود
+--  و پیشرفتش نسبت به هدف سنجیده می‌شود.
+-- ========================================================================
+CREATE TABLE IF NOT EXISTS crm_focus (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  period_from TEXT,
+  period_to TEXT,
+  target_amount REAL DEFAULT 0,      -- هدفِ مبلغ فروش (ریال)
+  target_count INTEGER DEFAULT 0,    -- هدفِ تعداد معامله
+  product_ids TEXT DEFAULT '[]',     -- محصولاتِ مورد تمرکز
+  categories TEXT DEFAULT '',        -- یا دسته‌بندی‌ها (با «،»)
+  segment TEXT DEFAULT '',           -- بازار/صنعت هدف
+  priority TEXT DEFAULT 'normal',    -- low | normal | high
+  is_active INTEGER DEFAULT 1,
+  owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- سهمیهٔ هر کارشناس از یک تمرکز فروش
+CREATE TABLE IF NOT EXISTS crm_focus_members (
+  focus_id INTEGER NOT NULL REFERENCES crm_focus(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_amount REAL DEFAULT 0,
+  PRIMARY KEY (focus_id, user_id)
+);
+
+-- ========================================================================
+--  پشتیبانی مشتریان، خدمات پس از فروش و کیفیت محصول
+-- ========================================================================
+CREATE TABLE IF NOT EXISTS crm_tickets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER REFERENCES crm_customers(id) ON DELETE CASCADE,
+  contact_id INTEGER REFERENCES crm_contacts(id) ON DELETE SET NULL,
+  deal_id INTEGER REFERENCES crm_deals(id) ON DELETE SET NULL,
+  product_id INTEGER REFERENCES crm_products(id) ON DELETE SET NULL,
+  subject TEXT NOT NULL,
+  body TEXT DEFAULT '',
+  type TEXT DEFAULT 'support',       -- support | warranty | complaint | quality | request | installation
+  severity TEXT DEFAULT 'normal',    -- low | normal | high | critical
+  status TEXT DEFAULT 'new',         -- new | in_progress | waiting_customer | resolved | closed
+  channel TEXT DEFAULT 'phone',      -- phone | email | sms | visit | portal
+  assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  opened_by INTEGER REFERENCES users(id),
+  due_at TEXT,                       -- تعهد زمانی پاسخ/رفع
+  first_response_at TEXT,
+  resolved_at TEXT,
+  resolution TEXT DEFAULT '',        -- چه کاری انجام شد
+  root_cause TEXT DEFAULT '',        -- ریشهٔ مشکل (برای تحلیل کیفیت)
+  is_quality_issue INTEGER DEFAULT 0,-- آیا ایراد کیفیِ محصول بوده است؟
+  batch_no TEXT DEFAULT '',          -- شماره بچ/سری ساخت — برای ردیابی کیفیت
+  cost REAL DEFAULT 0,               -- هزینهٔ رسیدگی (تعویض، حمل، …)
+  attachments TEXT DEFAULT '[]',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_tickets ON crm_tickets(status, due_at);
+CREATE INDEX IF NOT EXISTS idx_crm_tickets_cust ON crm_tickets(customer_id, id);
+
+CREATE TABLE IF NOT EXISTS crm_ticket_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id INTEGER NOT NULL REFERENCES crm_tickets(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  is_internal INTEGER DEFAULT 0,     -- یادداشت داخلی (مشتری نمی‌بیند)
+  channel TEXT DEFAULT 'note',       -- note | phone | email | sms
+  user_id INTEGER REFERENCES users(id),
+  attachments TEXT DEFAULT '[]',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_ticket_msg ON crm_ticket_messages(ticket_id, id);
+
+-- بازخورد و رضایت مشتری
+CREATE TABLE IF NOT EXISTS crm_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER REFERENCES crm_customers(id) ON DELETE CASCADE,
+  contact_id INTEGER REFERENCES crm_contacts(id) ON DELETE SET NULL,
+  deal_id INTEGER REFERENCES crm_deals(id) ON DELETE SET NULL,
+  ticket_id INTEGER REFERENCES crm_tickets(id) ON DELETE SET NULL,
+  product_id INTEGER REFERENCES crm_products(id) ON DELETE SET NULL,
+  kind TEXT DEFAULT 'csat',          -- nps | csat | complaint | suggestion | praise
+  score INTEGER,                     -- NPS: ۰ تا ۱۰
+  csat INTEGER,                      -- رضایت: ۱ تا ۵
+  comment TEXT DEFAULT '',
+  source TEXT DEFAULT 'phone',       -- phone | sms | email | visit | form
+  user_id INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_feedback ON crm_feedback(customer_id, id);
+
+-- ========================================================================
+--  پیامک — جا‌نمایی برای اتصال به درگاه واقعی
+--  امروز پیام‌ها در صف ثبت و به‌صورت «شبیه‌سازی» علامت می‌خورند؛ برای اتصال
+--  کافی است تابع ارسال در server/sms.js به درگاه واقعی وصل شود.
+-- ========================================================================
+CREATE TABLE IF NOT EXISTS crm_sms (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER REFERENCES crm_customers(id) ON DELETE SET NULL,
+  contact_id INTEGER REFERENCES crm_contacts(id) ON DELETE SET NULL,
+  ticket_id INTEGER REFERENCES crm_tickets(id) ON DELETE SET NULL,
+  phone TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT DEFAULT 'queued',      -- queued | sent | failed | simulated | cancelled
+  provider TEXT DEFAULT '',
+  provider_msg_id TEXT DEFAULT '',
+  error TEXT DEFAULT '',
+  scheduled_at TEXT,                 -- ارسال زمان‌بندی‌شده
+  sent_at TEXT,
+  user_id INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_sms ON crm_sms(status, scheduled_at);
+
+CREATE TABLE IF NOT EXISTS crm_sms_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  body TEXT NOT NULL,                -- می‌تواند شامل {نام}، {شرکت}، {مبلغ} باشد
+  kind TEXT DEFAULT 'followup',      -- followup | thanks | survey | reminder | support
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- پیشنهادهای تحلیلی (فعلاً دستی؛ بعداً توسط LLM پر می‌شود)
+CREATE TABLE IF NOT EXISTS crm_insights (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT DEFAULT 'team',         -- team | user
+  target_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  period_from TEXT DEFAULT '',
+  period_to TEXT DEFAULT '',
+  source TEXT DEFAULT 'manual',      -- manual | llm
+  model TEXT DEFAULT '',             -- نام مدلی که تولیدش کرده
+  title TEXT DEFAULT '',
+  body TEXT DEFAULT '',              -- متن تحلیل/پیشنهاد
+  payload TEXT DEFAULT '{}',         -- دادهٔ خامی که تحلیل بر اساسش انجام شده
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crm_insights ON crm_insights(scope, target_user_id, id);
+`);
+{
+  const defaults = {
+    // واحدهایی که می‌توانند با CRM کار کنند — آرایهٔ JSON از id واحد
+    crm_dept_ids: '[]',
+    // واحدهایی با «دسترسی کامل» (دیدن و ویرایش رکورد همه، حذف، تعریف فیلد، گزارش کل)
+    crm_full_dept_ids: '[]',
+    crm_enabled: '1',
+    // دلایل رایج باخت — برای تحلیل یکدست (با «،» جدا می‌شوند)
+    crm_lost_reasons: 'قیمت بالا،زمان تحویل طولانی،رقیب برنده شد،نیاز منتفی شد،مشکل کیفیت،عدم پاسخ مشتری،مشکل شرایط پرداخت',
+    // مدارکِ پیش‌فرضِ پاکات مناقصه — هنگام ساخت هر مناقصه به‌صورت چک‌لیست درج می‌شود
+    crm_tender_checklist: 'الف|ضمانت‌نامه شرکت در مناقصه\n'
+      + 'ب|اساسنامه و آگهی آخرین تغییرات\nب|گواهی ثبت و کد اقتصادی\n'
+      + 'ب|رزومه و سوابق قراردادهای مشابه\nب|گواهی صلاحیت / استاندارد\n'
+      + 'ب|صورت‌های مالی حسابرسی‌شده\nب|اسناد مناقصهٔ مهر و امضاشده\n'
+      + 'ج|برگ پیشنهاد قیمت\nج|آنالیز قیمت',
+    // چند روز قبل از مهلت مناقصه یادآوری ارسال شود (با «،» جدا)
+    crm_tender_reminder_days: '7،3،1',
+    // --- پیامک: جا‌نمایی برای اتصال به درگاه واقعی ---
+    sms_enabled: '0',                 // تا وقتی درگاه تنظیم نشده، ارسال «شبیه‌سازی» می‌شود
+    sms_provider: '',                 // kavenegar | ghasedak | melipayamak | …
+    sms_api_url: '',
+    sms_api_key: '',
+    sms_sender: '',                   // شمارهٔ فرستنده
+    // مشتری بعد از چند روز بی‌ارتباطی، «نیازمند پیگیری» شمرده می‌شود
+    crm_stale_customer_days: '45',
+  };
+  const ins = db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)');
+  for (const [k, v] of Object.entries(defaults)) ins.run(k, v);
+}
+
+// ============================================================================
+//  مرخصی — سقفِ سالانهٔ هر نفر و دفترِ کسر/افزایش مانده
+//  درخواستِ مرخصی روی همان موتور گردش‌کار ثبت می‌شود؛ فرآیندِ نشان‌دار (leave_enabled)
+//  پس از تایید نهایی، به‌طور خودکار از ماندهٔ کاربر کم می‌کند.
+// ============================================================================
+db.exec(`
+CREATE TABLE IF NOT EXISTS leave_balances (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,                 -- سال شمسی
+  entitled_hours REAL DEFAULT 0,         -- سقف مرخصی استحقاقی (ساعت)
+  sick_hours REAL DEFAULT 0,             -- سقف مرخصی استعلاجی (ساعت) — ۰ = بدون سقف
+  carried_over_hours REAL DEFAULT 0,     -- ماندهٔ منتقل‌شده از سال قبل
+  note TEXT DEFAULT '',
+  updated_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, year)
+);
+
+-- هر سطر یک کسر (منفی) یا افزایش (مثبت) از ماندهٔ مرخصی است
+CREATE TABLE IF NOT EXISTS leave_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  leave_type TEXT NOT NULL,              -- entitled | unpaid | sick
+  unit TEXT NOT NULL DEFAULT 'hour',     -- hour | day (فقط برای نمایش؛ مقدار همیشه به ساعت ذخیره می‌شود)
+  hours REAL NOT NULL,                   -- مقدار به ساعت (منفی = کسر از مانده)
+  amount_label TEXT DEFAULT '',          -- شرح خواناى مقدار، مثل «۲ روز» یا «۳ ساعت»
+  request_id INTEGER REFERENCES workflow_requests(id) ON DELETE SET NULL,
+  from_date TEXT DEFAULT '',
+  to_date TEXT DEFAULT '',
+  note TEXT DEFAULT '',
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_leave_ledger_user ON leave_ledger(user_id, year);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leave_ledger_request ON leave_ledger(request_id) WHERE request_id IS NOT NULL;
+`);
+{
+  const defaults = {
+    // ساعت کاری هر روز — مبنای تبدیل «روز» به «ساعت»
+    leave_workday_hours: '8',
+    // سقف پیش‌فرضِ مرخصی استحقاقی سالانه (روز) — هنگام «تعریف برای همهٔ پرسنل» پیشنهاد می‌شود
+    leave_default_days: '26',
+    // کدام نوع مرخصی از ماندهٔ استحقاقی کم شود؟ JSON: {entitled:1, unpaid:0, sick:0}
+    leave_deduct_policy: '{"entitled":1,"unpaid":0,"sick":0}',
+  };
+  const ins = db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)');
+  for (const [k, v] of Object.entries(defaults)) ins.run(k, v);
+}
+
+// ---------- مایگریشن‌های CRM ----------
+// گزارش‌های مرحله‌ای حالا هم برای معامله و هم برای مناقصه استفاده می‌شوند
+try { db.exec('ALTER TABLE crm_stage_reports ADD COLUMN tender_id INTEGER REFERENCES crm_tenders(id) ON DELETE CASCADE'); } catch {}
+// نسخهٔ اولِ جدول، deal_id را NOT NULL تعریف کرده بود؛ برای گزارشِ مناقصه باید nullable شود.
+// SQLite ستون را جای خود تغییر نمی‌دهد، پس جدول بازسازی و داده منتقل می‌شود.
+try {
+  const info = db.prepare('PRAGMA table_info(crm_stage_reports)').all();
+  const dealCol = info.find(c => c.name === 'deal_id');
+  if (dealCol && dealCol.notnull) {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE crm_stage_reports_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deal_id INTEGER REFERENCES crm_deals(id) ON DELETE CASCADE,
+        tender_id INTEGER REFERENCES crm_tenders(id) ON DELETE CASCADE,
+        customer_id INTEGER REFERENCES crm_customers(id) ON DELETE CASCADE,
+        from_stage TEXT DEFAULT '', stage TEXT NOT NULL,
+        summary TEXT DEFAULT '', went_well TEXT DEFAULT '', went_wrong TEXT DEFAULT '',
+        blockers TEXT DEFAULT '', next_action TEXT DEFAULT '', confidence INTEGER DEFAULT 0,
+        user_id INTEGER REFERENCES users(id),
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO crm_stage_reports_new
+        (id, deal_id, tender_id, customer_id, from_stage, stage, summary, went_well, went_wrong,
+         blockers, next_action, confidence, user_id, created_at)
+      SELECT id, deal_id, NULL, customer_id, from_stage, stage, summary, went_well, went_wrong,
+             blockers, next_action, confidence, user_id, created_at FROM crm_stage_reports;
+      DROP TABLE crm_stage_reports;
+      ALTER TABLE crm_stage_reports_new RENAME TO crm_stage_reports;
+      CREATE INDEX IF NOT EXISTS idx_crm_sr_deal ON crm_stage_reports(deal_id, id);
+      CREATE INDEX IF NOT EXISTS idx_crm_sr_tender ON crm_stage_reports(tender_id, id);
+      CREATE INDEX IF NOT EXISTS idx_crm_sr_user ON crm_stage_reports(user_id, created_at);
+    `);
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+} catch (e) { console.error('⚠️ بازسازی crm_stage_reports:', e.message); }
+// [محصولات] موجودی، مشخصات فنی و اطلاعات تکمیلی
+try { db.exec('ALTER TABLE crm_products ADD COLUMN stock REAL DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE crm_products ADD COLUMN reorder_point REAL DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE crm_products ADD COLUMN lead_time_days INTEGER DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE crm_products ADD COLUMN warranty_months INTEGER DEFAULT 0'); } catch {}
+try { db.exec("ALTER TABLE crm_products ADD COLUMN spec TEXT DEFAULT ''"); } catch {}
+try { db.exec("ALTER TABLE crm_products ADD COLUMN attachments TEXT DEFAULT '[]'"); } catch {}
+// [مناقصه] رقیبی که معاملهٔ عادی را برد — برای تحلیل رقابتی
+try { db.exec("ALTER TABLE crm_deals ADD COLUMN competitor TEXT DEFAULT ''"); } catch {}
+// [مناقصه] معامله‌ای که از مسیر مناقصه آمده است
+try { db.exec('ALTER TABLE crm_deals ADD COLUMN tender_id INTEGER REFERENCES crm_tenders(id) ON DELETE SET NULL'); } catch {}
+
+// [مرخصی] نشان‌دارکردن یک فرآیند به‌عنوان «فرآیند مرخصی» و نگاشتِ فیلدهای فرمِ آن
+try { db.exec('ALTER TABLE workflow_templates ADD COLUMN leave_enabled INTEGER DEFAULT 0'); } catch {}
+// نگاشت: {type_field, day_field, hour_field, from_field, to_field, range_field, default_type}
+try { db.exec("ALTER TABLE workflow_templates ADD COLUMN leave_map TEXT DEFAULT '{}'"); } catch {}
+
 // ---------- seed ----------
 const userCount = db.prepare('SELECT COUNT(*) c FROM users').get().c;
 if (userCount === 0) {
@@ -406,6 +946,26 @@ if (userCount === 0) {
   insStep.run(tplId, 2, 'تایید حسابداری', 'dept_manager', 3, null, 48);
   insStep.run(tplId, 3, 'تایید مدیریت', 'role', null, 'admin', 48);
   insStep.run(tplId, 4, 'تامین توسط بازرگانی', 'dept_manager', 5, null, 72);
+}
+
+// یک‌بار (و فقط یک‌بار): واحدهای «بازرگانی» و «مدیریت» به‌طور پیش‌فرض دسترسی کاملِ CRM بگیرند.
+// عمداً بعد از بلوک seed اجرا می‌شود تا روی دیتابیسِ تازه هم واحدها موجود باشند.
+// بعد از این، هر تغییری که مدیر سامانه در تنظیمات بدهد محترم است و بازنویسی نمی‌شود.
+{
+  const seeded = db.prepare("SELECT value FROM app_settings WHERE key = 'crm_defaults_seeded'").get()?.value;
+  if (seeded !== '1') {
+    const ids = db.prepare(`SELECT id FROM departments
+      WHERE is_management = 1 OR name IN ('بازرگانی', 'مدیریت', 'فروش', 'بازرگانی و فروش')`)
+      .all().map(r => r.id);
+    if (ids.length) {
+      const set = db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
+      set.run('crm_dept_ids', JSON.stringify(ids));
+      set.run('crm_full_dept_ids', JSON.stringify(ids));
+      // فقط وقتی واقعاً واحدی پیدا شد علامت بزن — وگرنه اجرای بعدی دوباره تلاش می‌کند
+      db.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)').run('crm_defaults_seeded', '1');
+    }
+  }
 }
 
 export default db;

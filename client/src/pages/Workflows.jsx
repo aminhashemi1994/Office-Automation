@@ -161,6 +161,17 @@ function parseAlts(v) {
   try { return JSON.parse(v || '[]'); } catch { return []; }
 }
 
+// [مرخصی] انتخابِ یکی از فیلدهای فرمِ همین فرآیند (فقط انواعِ سازگار نمایش داده می‌شوند)
+function FieldPicker({ fields, value, types, onChange }) {
+  const usable = fields.filter(f => f.key && (!types || types.includes(f.type || 'text')));
+  return (
+    <select className="input" value={value || ''} onChange={e => onChange(e.target.value || undefined)}>
+      <option value="">— انتخاب نشده —</option>
+      {usable.map(f => <option key={f.key} value={f.key}>{f.label || f.key}</option>)}
+    </select>
+  );
+}
+
 function TemplateModal({ tpl, onClose, onDone }) {
   const { departments, users, settings, toast } = useStore();
 
@@ -205,6 +216,13 @@ function TemplateModal({ tpl, onClose, onDone }) {
   ]);
   const [notifyFinal, setNotifyFinal] = useState(tpl ? tpl.notify_requester_on_final !== 0 : true);
   const [requesterSig, setRequesterSig] = useState(tpl ? tpl.requester_signature !== 0 : true);
+  // [تایید نهایی درخواست‌دهنده] پس از آخرین مرحله، درخواست برای تصمیم نهایی به خودِ او برمی‌گردد
+  const [requesterFinal, setRequesterFinal] = useState(!!tpl?.requester_final_approval);
+  // [مرخصی] این فرآیند یک «درخواست مرخصی» است و پس از تایید نهایی از ماندهٔ کاربر کم می‌کند
+  const [leaveOn, setLeaveOn] = useState(!!tpl?.leave_enabled);
+  const [leaveMap, setLeaveMap] = useState(() => {
+    try { return JSON.parse(tpl?.leave_map || '{}') || {}; } catch { return {}; }
+  });
   // [مورد ۱] محدودهٔ واحدها ([] = همه‌جا)
   const [scopeDeptIds, setScopeDeptIds] = useState(() => { try { return JSON.parse(tpl?.scope_dept_ids || '[]'); } catch { return []; } });
   // [مورد ۳] مهلت کل تایید
@@ -255,6 +273,9 @@ function TemplateModal({ tpl, onClose, onDone }) {
       const body = {
         name, description, title_placeholder: titlePlaceholder, form_schema: fields, steps,
         notify_requester_on_final: notifyFinal, requester_signature: requesterSig,
+        requester_final_approval: requesterFinal,
+        leave_enabled: leaveOn,
+        leave_map: leaveMap,
         scope_dept_ids: scopeDeptIds.map(Number),
         total_deadline_hours: Number(totalDeadline) || 0,
         attachments: attachments.map(Number),
@@ -295,6 +316,16 @@ function TemplateModal({ tpl, onClose, onDone }) {
         </Field>
       </div>
 
+      {/* [تایید نهایی درخواست‌دهنده] آخرین حرف را خودِ درخواست‌دهنده می‌زند */}
+      <Field label="تایید نهایی توسط درخواست‌دهنده"
+        hint="با «فعال»، بعد از تایید آخرین مرحله، درخواست بسته نمی‌شود و به کارتابل خودِ درخواست‌دهنده می‌رود تا آن را تایید نهایی کند، کامنت بگذارد، یا به اول/هر مرحله‌ای از فرآیند برگرداند.">
+        <Segmented value={requesterFinal ? 1 : 0} onChange={v => setRequesterFinal(!!v)}
+          options={[
+            { value: 1, label: 'فعال', tone: 'primary', hint: 'تصمیم نهایی با درخواست‌دهنده است' },
+            { value: 0, label: 'غیرفعال', hint: 'با تایید آخرین مرحله، درخواست بسته می‌شود' },
+          ]} />
+      </Field>
+
       {/* [پیوست‌ها] اجازهٔ پیوست فایل توسط افرادِ سلسله‌مراتب — کلیدِ کلیِ این فرآیند */}
       <Field label="پیوست فایل توسط افرادِ سلسله‌مراتب"
         hint={globalAttOff
@@ -330,6 +361,69 @@ function TemplateModal({ tpl, onClose, onDone }) {
         <AttachmentPicker value={attachments} onChange={setAttachments} placeholder="انتخاب فایل" label="افزودن فایل"
           disabled={globalAttOff} />
       </Field>
+
+      {/* [مرخصی] این فرآیند را به‌عنوان «درخواست مرخصی» علامت بزنید تا پس از تایید نهایی،
+          مقدارِ مرخصی خودکار از ماندهٔ درخواست‌دهنده کم شود. */}
+      <Field label="این فرآیند، «درخواست مرخصی» است"
+        hint="با فعال‌کردن، پس از تایید نهاییِ درخواست، مقدار مرخصی محاسبه و از ماندهٔ درخواست‌دهنده کم می‌شود (صفحهٔ «مرخصی»).">
+        <Segmented value={leaveOn ? 1 : 0} onChange={v => setLeaveOn(!!v)}
+          options={[
+            { value: 1, label: 'بله', tone: 'primary', hint: 'از ماندهٔ مرخصی کسر می‌شود' },
+            { value: 0, label: 'خیر' },
+          ]} />
+      </Field>
+      {leaveOn && (
+        <div className="card-pad panel-soft" style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>
+            نگاشت فیلدهای فرم به اطلاعات مرخصی
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px', lineHeight: 1.8 }}>
+            مشخص کنید مقدار مرخصی از کدام فیلدِ فرم خوانده شود. اگر هم «بازهٔ ساعتی» و هم «تعداد روز»
+            تعریف شده باشد، اولویت با بازهٔ ساعتی است، سپس تعداد ساعت و در آخر تعداد روز.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="فیلدِ «نوع مرخصی»"
+              hint="مقدارهای «استحقاقی»، «بدون حقوق» و «استعلاجی» خودکار شناسایی می‌شوند.">
+              <FieldPicker fields={fields} value={leaveMap.type_field} types={['select', 'text']}
+                onChange={v => setLeaveMap(m => ({ ...m, type_field: v }))} />
+            </Field>
+            <Field label="نوع پیش‌فرض (اگر فیلد نوع نداشته باشید)">
+              <select className="input" value={leaveMap.default_type || 'entitled'}
+                onChange={e => setLeaveMap(m => ({ ...m, default_type: e.target.value }))}>
+                <option value="entitled">استحقاقی</option>
+                <option value="unpaid">بدون حقوق</option>
+                <option value="sick">استعلاجی</option>
+              </select>
+            </Field>
+            <Field label="فیلدِ «بازهٔ ساعتی» (مرخصی ساعتی)">
+              <FieldPicker fields={fields} value={leaveMap.range_field} types={['time_range']}
+                onChange={v => setLeaveMap(m => ({ ...m, range_field: v }))} />
+            </Field>
+            <Field label="فیلدِ «تعداد ساعت»">
+              <FieldPicker fields={fields} value={leaveMap.hour_field} types={['number', 'text']}
+                onChange={v => setLeaveMap(m => ({ ...m, hour_field: v }))} />
+            </Field>
+            <Field label="فیلدِ «تعداد روز» (مرخصی روزانه)">
+              <FieldPicker fields={fields} value={leaveMap.day_field} types={['number', 'text']}
+                onChange={v => setLeaveMap(m => ({ ...m, day_field: v }))} />
+            </Field>
+            <Field label="فیلدِ «تاریخ شروع»">
+              <FieldPicker fields={fields} value={leaveMap.from_field} types={['date', 'text']}
+                onChange={v => setLeaveMap(m => ({ ...m, from_field: v }))} />
+            </Field>
+            <Field label="فیلدِ «تاریخ پایان»">
+              <FieldPicker fields={fields} value={leaveMap.to_field} types={['date', 'text']}
+                onChange={v => setLeaveMap(m => ({ ...m, to_field: v }))} />
+            </Field>
+          </div>
+          {!leaveMap.range_field && !leaveMap.hour_field && !leaveMap.day_field && (
+            <p style={{ fontSize: 12.3, color: 'var(--amber)', margin: '4px 0 0' }}>
+              حداقل یکی از فیلدهای «بازهٔ ساعتی»، «تعداد ساعت» یا «تعداد روز» را انتخاب کنید،
+              وگرنه چیزی از مانده کم نمی‌شود.
+            </p>
+          )}
+        </div>
+      )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '18px 0 10px' }}>
         <b>مراحل تایید (سلسله‌مراتب)</b>

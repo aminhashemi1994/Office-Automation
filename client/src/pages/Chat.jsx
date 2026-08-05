@@ -12,7 +12,7 @@ import { Avatar, Modal, Field, UserPicker, UserListPicker } from '../components/
 const CONV_LABEL = { dm: '', group: 'گروه', channel: 'کانال' };
 
 export default function Chat() {
-  const { user, users, on, socketEmit, setActiveCall, toast } = useStore();
+  const { user, users, on, socketEmit, setActiveCall, toast, refreshChatUnread } = useStore();
   const [convs, setConvs] = useState([]);
   const [active, setActive] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -54,7 +54,9 @@ export default function Chat() {
     const off1 = on('message:new', ({ conversation_id, message }) => {
       if (activeRef.current?.id === conversation_id) {
         setMessages(m => [...m, message]);
-        api(`/chat/conversations/${conversation_id}/read`, { method: 'POST' });
+        // گفتگوی باز است ← پیام خوانده حساب می‌شود و نشانِ سایدبار هم باید کم شود
+        api(`/chat/conversations/${conversation_id}/read`, { method: 'POST' })
+          .then(refreshChatUnread).catch(() => {});
       }
       loadConvs();
     });
@@ -84,6 +86,7 @@ export default function Chat() {
     setMessages(r.messages);
     await api(`/chat/conversations/${c.id}/read`, { method: 'POST' });
     setConvs(list => list.map(x => x.id === c.id ? { ...x, unread: 0 } : x));
+    refreshChatUnread(); // نشانِ «گفتگوها» در سایدبار به‌روز شود
   };
 
   const send = async () => {

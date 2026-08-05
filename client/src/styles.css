@@ -26,6 +26,13 @@
   --red: #dc2626; --red-soft: #fef2f2;
   --amber: #d97706; --amber-soft: #fffbeb;
   --sky: #0284c7; --sky-soft: #f0f9ff;
+  /* رنگ نمودارها — با اسکریپت اعتبارسنجی برای کوررنگی (deutan/protan/tritan) آزموده شده.
+     عمداً از جفتِ قرمز/سبز استفاده نمی‌کنیم چون در کوررنگیِ رایج به هم می‌چسبند. */
+  --chart-a: #0284c7;   /* سریِ اول — «برنده» */
+  --chart-b: #d97706;   /* سریِ دوم — «باخته» */
+  --chart-seq-1: #e0e7ff; --chart-seq-2: #a5b4fc; --chart-seq-3: #818cf8;
+  --chart-seq-4: #6366f1; --chart-seq-5: #4f46e5;
+  --chart-grid: #eceef5;
   --sidebar: #171a2e;
   --sidebar-2: #1d1f38;
   --scrollbar: #c9cddb;
@@ -55,6 +62,12 @@
   --red: #f87171; --red-soft: #3a1c1f;
   --amber: #fbbf24; --amber-soft: #33280d;
   --sky: #38bdf8; --sky-soft: #0c2635;
+  /* گام‌های حالت تیره جداگانه انتخاب و اعتبارسنجی شده‌اند (نه صرفاً وارونهٔ حالت روشن) */
+  --chart-a: #2f96cf;
+  --chart-b: #c47d0c;
+  --chart-seq-1: #2a2f52; --chart-seq-2: #3d4478; --chart-seq-3: #545bb0;
+  --chart-seq-4: #6b73d8; --chart-seq-5: #7c83ff;
+  --chart-grid: #23274a;
   --sidebar: #0a0c17;
   --sidebar-2: #10121f;
   --scrollbar: #2f3559;
@@ -234,6 +247,10 @@ textarea.input { resize: vertical; min-height: 84px; }
 
 /* ---------- جدول ---------- */
 .table { width: 100%; border-collapse: collapse; }
+/* جدول‌های پهن (کارتابل، گزارش‌گیری، CRM، مرخصی) به‌جای شکستنِ صفحه در
+   نمایشگرهای باریک، داخل کارتِ خودشان به‌صورت افقی اسکرول می‌شوند. */
+.card:has(> .table) { overflow-x: auto; }
+.card > .table { min-width: max-content; }
 .table th { text-align: right; font-size: 12px; color: var(--text-3); font-weight: 600; padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .table td { padding: 12px 14px; border-bottom: 1px solid var(--border-soft); font-size: 13.5px; vertical-align: middle; }
 .table tr:last-child td { border-bottom: none; }

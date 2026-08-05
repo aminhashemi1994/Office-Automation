@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Inbox, ListTodo, Users, Building2, ArrowLeft, Clock, Bell, StickyNote, CalendarCheck } from 'lucide-react';
+import { Inbox, ListTodo, Users, Building2, ArrowLeft, Clock, Bell, StickyNote, CalendarCheck, Handshake, Gavel, CalendarClock } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fa, fmtRelative, fmtDateTime, deadlineState } from '../utils.js';
@@ -20,12 +20,15 @@ export default function Dashboard() {
   const [inbox, setInbox] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [notes, setNotes] = useState([]);
+  const [crm, setCrm] = useState(null); // خلاصهٔ CRM — فقط برای کسانی که دسترسی دارند
 
   const load = async () => {
     const [i, t, n] = await Promise.all([api('/workflows/requests/inbox'), api('/tasks'), api('/notes')]);
     setInbox(i.requests);
     setTasks(t.mine.filter(x => x.status !== 'done'));
     setNotes(n.notes);
+    // بدون دسترسی CRM این درخواست ۴۰۳ می‌دهد و کارت نمایش داده نمی‌شود
+    api('/crm/summary').then(setCrm).catch(() => setCrm(null));
   };
   useEffect(() => { load(); return on('notification', load); }, []);
 
@@ -43,6 +46,20 @@ export default function Dashboard() {
     { label: 'تسک‌های باز شما', value: tasks.length, icon: ListTodo, bg: 'var(--sky-soft)', fg: 'var(--sky)', link: '/tasks' },
     { label: 'یادآوری‌های امروز', value: remindToday.length, icon: Bell, bg: 'var(--amber-soft)', fg: 'var(--amber)', link: '/notes' },
   ];
+
+  // [CRM] کارت خلاصهٔ فروش — فقط برای کاربرانی که به CRM دسترسی دارند
+  const crmStats = crm ? [
+    { label: 'معاملات باز شما', value: fa(crm.open_count), sub: `${Number(crm.open_amount || 0).toLocaleString('fa-IR')} ریال`,
+      icon: Handshake, fg: 'var(--chart-a)' },
+    { label: 'نرخ موفقیت', value: crm.success_rate === null ? '—' : `${fa(crm.success_rate, 1)}٪`,
+      sub: `${fa(crm.won_count)} برنده · ${fa(crm.lost_count)} باخته`, icon: Handshake, fg: 'var(--green)' },
+    { label: 'مناقصات باز', value: fa(crm.open_tenders),
+      sub: crm.tenders_due_soon > 0 ? `${fa(crm.tenders_due_soon)} مهلت تا یک هفته` : 'مهلت نزدیکی ندارید',
+      icon: Gavel, fg: crm.tenders_due_soon > 0 ? 'var(--red)' : 'var(--text-2)' },
+    { label: 'پیگیری عقب‌افتاده', value: fa(crm.overdue_follow_ups),
+      sub: crm.overdue_follow_ups > 0 ? 'همین امروز رسیدگی کنید' : 'همه‌چیز به‌روز است',
+      icon: CalendarClock, fg: crm.overdue_follow_ups > 0 ? 'var(--amber)' : 'var(--green)' },
+  ] : [];
 
   return (
     <div className="content">
@@ -111,6 +128,27 @@ export default function Dashboard() {
             </Link>
           ))}
         </div>
+
+      {/* [CRM] خلاصهٔ فروش و مناقصات — فقط برای واحدهای دارای دسترسی */}
+      {crm && (
+        <Link to="/crm" className="card card-pad" style={{ display: 'block', marginBottom: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <b style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <Handshake size={16} /> فروش و مناقصات
+            </b>
+            <ArrowLeft size={16} style={{ color: 'var(--text-3)' }} />
+          </div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            {crmStats.map(c => (
+              <div key={c.label} style={{ flex: 1, minWidth: 150 }}>
+                <small style={{ color: 'var(--text-3)' }}>{c.label}</small>
+                <div style={{ fontSize: 19, fontWeight: 700, color: c.fg, lineHeight: 1.6 }}>{c.value}</div>
+                <small style={{ color: 'var(--text-3)', fontSize: 11.5 }}>{c.sub}</small>
+              </div>
+            ))}
+          </div>
+        </Link>
+      )}
 
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px 8px' }}>

@@ -2,12 +2,15 @@ import { Router } from 'express';
 import db from '../db.js';
 import { hasPerm } from '../auth.js';
 import { resolveApprovers } from './workflows.js';
+import { canUseCrm, canManageAll } from './crm.js';
 
 const r = Router();
 
 r.get('/', (req, res) => {
   const q = String(req.query.q || '').trim();
-  if (q.length < 2) return res.json({ users: [], messages: [], requests: [], tasks: [], departments: [], files: [] });
+  if (q.length < 2) {
+    return res.json({ users: [], messages: [], requests: [], tasks: [], departments: [], files: [], customers: [], tenders: [] });
+  }
   const like = `%${q}%`;
   const me = req.user;
 
@@ -79,7 +82,29 @@ r.get('/', (req, res) => {
     FROM departments d LEFT JOIN users m ON m.id = d.manager_id
     WHERE d.name LIKE ? OR d.description LIKE ? LIMIT 6`).all(like, like);
 
-  res.json({ users, messages, requests, tasks, departments, files });
+  // [CRM] مشتریان و مناقصات — فقط برای کسانی که به CRM دسترسی دارند
+  let customers = [];
+  let tenders = [];
+  if (canUseCrm(me)) {
+    const crmAll = canManageAll(me);
+    customers = db.prepare(`
+      SELECT c.id, c.name, c.phone, c.city, c.status, u.full_name AS owner_name
+      FROM crm_customers c LEFT JOIN users u ON u.id = c.owner_id
+      WHERE c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR c.economic_code LIKE ?
+      ORDER BY c.updated_at DESC LIMIT 6`).all(like, like, like, like);
+    tenders = db.prepare(`
+      SELECT t.id, t.title, t.tender_no, t.status, t.submit_deadline,
+             COALESCE(c.name, t.organization) AS organization, u.full_name AS owner_name
+      FROM crm_tenders t
+      LEFT JOIN crm_customers c ON c.id = t.customer_id
+      LEFT JOIN users u ON u.id = t.owner_id
+      WHERE (t.title LIKE @q OR t.tender_no LIKE @q OR t.organization LIKE @q)
+        AND (@all = 1 OR t.owner_id = @uid)
+      ORDER BY t.id DESC LIMIT 6`)
+      .all({ q: like, all: crmAll ? 1 : 0, uid: me.id });
+  }
+
+  res.json({ users, messages, requests, tasks, departments, files, customers, tenders });
 });
 
 export default r;

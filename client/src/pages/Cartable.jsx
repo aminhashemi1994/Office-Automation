@@ -5,17 +5,22 @@ import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtRelative, fmtDateTime, parseDate } from '../utils.js';
 import { Modal, Field } from '../components/common.jsx';
-import { AttachmentPicker, AttachmentList, toFileIds as toIds } from '../components/Attachments.jsx';
-import { JalaliDatePicker } from '../components/JalaliDatePicker.jsx';
-import { TimePicker } from '../components/TimePicker.jsx';
-import { todayJalali, formatJalali } from '../jalali.js';
+import { AttachmentList, toFileIds as toIds } from '../components/Attachments.jsx';
+import RequestFormFields, { validateRequestForm } from '../components/RequestForm.jsx';
 
 export const STATUS = {
   in_progress: ['در جریان', 'badge-primary'],
+  // [تایید نهایی درخواست‌دهنده] همهٔ مراحل تایید شده و منتظر تایید نهاییِ خودِ درخواست‌دهنده است
+  awaiting_requester: ['در انتظار تایید نهایی', 'badge-sky'],
+  // [برگشت] برای اصلاح به درخواست‌دهنده برگشته و باید دوباره ارسال شود
+  returned: ['برگشت برای اصلاح', 'badge-amber'],
   approved: ['تایید نهایی', 'badge-green'],
   rejected: ['رد شده', 'badge-red'],
   cancelled: ['لغو شده', 'badge-gray'],
 };
+
+// وضعیت‌هایی که درخواست هنوز باز است و مرحله/مهلت معنا دارد
+export const OPEN_STATUSES = ['in_progress', 'awaiting_requester', 'returned'];
 
 export default function Cartable() {
   const { user, users, departments, hasPerm, on, toast, setCartableCount } = useStore();
@@ -111,7 +116,7 @@ export default function Cartable() {
                     {tab !== 'mine' && <td>{r.requester_name}</td>}
                     <td>
                       <span className={`badge ${sc}`}>{sl}</span>
-                      {r.status === 'in_progress' && r.step_title && (
+                      {r.step_title && (
                         <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 6 }}>{r.step_title}</span>
                       )}
                     </td>
@@ -136,34 +141,9 @@ export default function Cartable() {
   );
 }
 
-// [مورد ۲] فیلد پیوستِ فایل در فرم درخواست — چند فایل؛ مقدار، آرایه‌ای از id فایل‌هاست.
-// نوع فیلد 'image' فقط عکس می‌پذیرد و نوع 'file' هر سندی (PDF/Word/Excel/عکس/…).
-// (سازگاری با دادهٔ قدیمیِ تک‌عکس: مقدار عددی/رشته‌ای هم پذیرفته می‌شود.)
+// نگه‌داری نام‌های قبلی برای سازگاری با کدهایی که از این ماژول import می‌کنند
 export const toFileIds = toIds;
 export const toImageIds = toIds; // نام قبلی — برای سازگاری
-
-function FormFileField({ field, value, onChange }) {
-  const { settings } = useStore();
-  const onlyImages = field.type === 'image';
-  // [پیوست‌ها] کلید سراسری در تنظیمات سازمان
-  if (settings?.attachments_enabled === '0') {
-    return (
-      <div style={{ fontSize: 12.3, color: 'var(--text-3)' }}>
-        پیوست فایل در سامانه غیرفعال شده است؛ برای فعال‌سازی با مدیر سامانه تماس بگیرید.
-      </div>
-    );
-  }
-  return (
-    <AttachmentPicker
-      value={value}
-      onChange={onChange}
-      accept={onlyImages ? 'image/*' : undefined}
-      placeholder={field.placeholder || (onlyImages ? 'انتخاب عکس' : 'انتخاب فایل')}
-      label={onlyImages ? 'افزودن عکس' : 'افزودن فایل'}
-      thumb={84}
-    />
-  );
-}
 
 function NewRequestModal({ templates, onClose, onDone }) {
   const { toast, settings } = useStore();
@@ -187,45 +167,9 @@ function NewRequestModal({ templates, onClose, onDone }) {
     return () => { alive = false; };
   }, [tplId]);
 
-  // بافت تاریخ برای بررسی «زمان گذشته»: اگر فرم یک فیلد تاریخ دارد از همان استفاده می‌کنیم،
-  // در غیر این صورت «امروز» فرض می‌شود. اگر تاریخِ انتخابی امروز باشد، ساعت نباید از اکنون عقب‌تر باشد.
-  const now = new Date();
-  const nowHHMM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  const tj = todayJalali();
-  const todayStr = formatJalali(tj.jy, tj.jm, tj.jd);
-  const dateFields = schema.filter(f => f.type === 'date');
-  let dateCtxIsToday;
-  if (dateFields.length === 0) dateCtxIsToday = true;            // بدون فیلد تاریخ → امروز
-  else if (dateFields.length === 1) {
-    const dv = data[dateFields[0].key];
-    dateCtxIsToday = dv ? dv === todayStr : false;              // تا وقتی تاریخ انتخاب نشده، محدود نمی‌کنیم
-  } else dateCtxIsToday = false;                                 // چند فیلد تاریخ → ابهام، محدود نمی‌کنیم
-  const timeMin = dateCtxIsToday ? nowHHMM : undefined;
-
   const submit = async () => {
-    for (const f of schema) {
-      const v = data[f.key];
-      if (f.required) {
-        const missing = f.type === 'time_range'
-          ? (!v || !v.start || !v.end)
-          : (f.type === 'image' || f.type === 'file')
-          ? (!attOff && toIds(v).length === 0) // اگر پیوست کلاً غیرفعال است، الزام را نادیده بگیر
-          : !String(v ?? '').trim();
-        if (missing) return toast(`«${f.label}» الزامی است`, 'error');
-      }
-      // بررسی زمان گذشته
-      if (timeMin && f.type === 'time' && v && v < timeMin) {
-        return toast(`«${f.label}» نمی‌تواند از زمان کنونی (${nowHHMM}) عقب‌تر باشد`, 'error');
-      }
-      if (f.type === 'time_range' && v) {
-        if (timeMin && v.start && v.start < timeMin) {
-          return toast(`ساعت شروعِ «${f.label}» نمی‌تواند از زمان کنونی عقب‌تر باشد`, 'error');
-        }
-        if (v.start && v.end && v.end <= v.start) {
-          return toast(`ساعت پایانِ «${f.label}» باید بعد از ساعت شروع باشد`, 'error');
-        }
-      }
-    }
+    const err = validateRequestForm(schema, data, { attachmentsOff: attOff });
+    if (err) return toast(err, 'error');
     setBusy(true);
     try {
       await api('/workflows/requests', { method: 'POST', body: { template_id: tpl.id, title, form_data: data } });
@@ -276,45 +220,7 @@ function NewRequestModal({ templates, onClose, onDone }) {
         <input className="input" value={title} onChange={e => setTitle(e.target.value)}
           placeholder={tpl?.title_placeholder || 'مثلاً: خرید ۵۰ کیلوگرم مس'} />
       </Field>
-      {schema.map(f => (
-        <Field key={f.key} label={f.label + (f.required ? ' *' : '')}>
-          {f.type === 'textarea' ? (
-            <textarea className="input" placeholder={f.placeholder || ''} value={data[f.key] || ''} onChange={e => setData(d => ({ ...d, [f.key]: e.target.value }))} />
-          ) : f.type === 'select' ? (
-            <select className="input" value={data[f.key] || ''} onChange={e => setData(d => ({ ...d, [f.key]: e.target.value }))}>
-              <option value="">{f.placeholder || '— انتخاب —'}</option>
-              {(f.options || []).map(o => <option key={o} value={o}>{o}</option>)}
-            </select>
-          ) : f.type === 'date' ? (
-            <JalaliDatePicker value={data[f.key] || ''} placeholder={f.placeholder} disablePast
-              onChange={v => setData(d => ({ ...d, [f.key]: v }))} />
-          ) : f.type === 'time' ? (
-            <TimePicker value={data[f.key] || ''} minTime={timeMin}
-              onChange={v => setData(d => ({ ...d, [f.key]: v }))} />
-          ) : f.type === 'time_range' ? (
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-              <div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 4 }}>از ساعت</div>
-                <TimePicker value={data[f.key]?.start || ''} minTime={timeMin}
-                  onChange={v => setData(d => ({ ...d, [f.key]: { ...(d[f.key] || {}), start: v } }))} />
-              </div>
-              <div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 4 }}>تا ساعت</div>
-                <TimePicker value={data[f.key]?.end || ''} minTime={data[f.key]?.start || timeMin}
-                  onChange={v => setData(d => ({ ...d, [f.key]: { ...(d[f.key] || {}), end: v } }))} />
-              </div>
-            </div>
-          ) : (f.type === 'image' || f.type === 'file') ? (
-            <FormFileField field={f} value={data[f.key]} onChange={v => setData(d => ({ ...d, [f.key]: v }))} />
-          ) : (
-            <input className="input" type={f.type === 'number' ? 'number' : 'text'} placeholder={f.placeholder || ''}
-              value={data[f.key] || ''} onChange={e => setData(d => ({ ...d, [f.key]: e.target.value }))} />
-          )}
-          {f.placeholder && !['text', 'number', 'textarea', 'select', 'date', 'image', 'file'].includes(f.type) && (
-            <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>{f.placeholder}</div>
-          )}
-        </Field>
-      ))}
+      <RequestFormFields schema={schema} data={data} onChange={setData} />
     </Modal>
   );
 }

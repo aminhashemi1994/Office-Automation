@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, MessageSquare, Inbox, ListTodo, Users as UsersIcon, Building2,
   GitBranch, Bell, LogOut, Cable, UserCircle, CheckCheck, BarChart3, Video, Sun, Moon, Trash2, SlidersHorizontal,
-  Send, MessageSquare as MessageSquareIcon, Menu, StickyNote,
+  Send, MessageSquare as MessageSquareIcon, Menu, StickyNote, Handshake, CalendarDays,
 } from 'lucide-react';
 import { useStore } from './store.jsx';
 import { api } from './api.js';
@@ -25,6 +25,10 @@ import Recordings from './pages/Recordings.jsx';
 import Settings from './pages/Settings.jsx';
 import Profile from './pages/Profile.jsx';
 import Notes from './pages/Notes.jsx';
+// CRM و مرخصی سنگین‌اند و همهٔ کاربران بازشان نمی‌کنند —
+// جدا بارگذاری می‌شوند تا ورودِ اولیهٔ سامانه سبک بماند.
+const CRM = lazy(() => import('./pages/CRM.jsx'));
+const Leaves = lazy(() => import('./pages/Leaves.jsx'));
 
 const NOTIF_COLORS = {
   task: ['var(--sky-soft)', 'var(--sky)'],
@@ -176,6 +180,7 @@ function NotifPanel({ onClose }) {
 
 const TITLES = {
   '/': 'داشبورد', '/chat': 'گفتگوها', '/cartable': 'کارتابل', '/tasks': 'تسک‌ها',
+  '/crm': 'CRM — مشتریان و فروش', '/leaves': 'مرخصی',
   '/users': 'کاربران', '/departments': 'واحدهای سازمانی', '/workflows': 'فرآیندها',
   '/reports': 'گزارش‌گیری', '/recordings': 'ضبط جلسات و تماس‌ها', '/settings': 'تنظیمات سازمان', '/profile': 'پروفایل',
   '/notes': 'یادداشت‌ها و یادآوری‌ها',
@@ -184,7 +189,7 @@ const TITLES = {
 const fmtBadge = (n) => (n > 99 ? '۹۹+' : Number(n).toLocaleString('fa-IR'));
 
 function Layout({ children }) {
-  const { user, logout, unreadNotifs, hasPerm, departments, theme, toggleTheme, cartableCount, taskCount, taskCommentCount } = useStore();
+  const { user, logout, unreadNotifs, hasPerm, departments, settings, theme, toggleTheme, cartableCount, taskCount, taskCommentCount, chatUnread } = useStore();
   const [notifOpen, setNotifOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const notifRef = useRef(null);
@@ -209,6 +214,15 @@ function Layout({ children }) {
   // بخش ضبط‌ها فقط برای مدیر سامانه و سرگروه‌ها/مدیران واحدها
   const canViewRecordings = user.role === 'admin' || user.role === 'manager'
     || departments.some(d => d.manager_id === user.id);
+  // [CRM] مدیر سامانه و واحد مدیریت همیشه؛ بقیه فقط اگر واحدشان در تنظیمات سازمان مجاز شده باشد
+  const crmDeptIds = (() => {
+    try { return JSON.parse(settings?.crm_dept_ids || '[]').map(Number); } catch { return []; }
+  })();
+  const canUseCrm = settings?.crm_enabled !== '0' && (
+    user.role === 'admin' || hasPerm('crm.manage') || !!myDept?.is_management
+    || crmDeptIds.includes(Number(user.department_id))
+    || departments.some(d => d.manager_id === user.id && crmDeptIds.includes(d.id))
+  );
 
   return (
     <div className="app">
@@ -224,7 +238,11 @@ function Layout({ children }) {
         <nav className="nav">
           <div className="nav-label">اصلی</div>
           <NavLink to="/" end className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><LayoutDashboard size={19} /><span>داشبورد</span></NavLink>
-          <NavLink to="/chat" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><MessageSquare size={19} /><span>گفتگوها</span></NavLink>
+          <NavLink to="/chat" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            <MessageSquare size={19} /><span>گفتگوها</span>
+            {/* نشانِ پیام نخوانده — بدون بازکردن گفتگو هم مشخص است که پیام دارید */}
+            {chatUnread > 0 && <span className="badge-count nav-badge">{fmtBadge(chatUnread)}</span>}
+          </NavLink>
           <NavLink to="/cartable" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
             <Inbox size={19} /><span>کارتابل</span>
             {cartableCount > 0 && <span className="badge-count nav-badge">{fmtBadge(cartableCount)}</span>}
@@ -242,6 +260,12 @@ function Layout({ children }) {
             </span>
           </NavLink>
           <NavLink to="/notes" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><StickyNote size={19} /><span>یادداشت‌ها</span></NavLink>
+          {/* [مرخصی] ماندهٔ مرخصیِ خودم را همیشه می‌بینم؛ مدیران، ماندهٔ پرسنل را */}
+          <NavLink to="/leaves" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><CalendarDays size={19} /><span>مرخصی</span></NavLink>
+          {/* [CRM] فقط واحدهایی که در تنظیمات سازمان مجاز شده‌اند */}
+          {canUseCrm && (
+            <NavLink to="/crm" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><Handshake size={19} /><span>CRM — مشتریان</span></NavLink>
+          )}
           {(hasPerm('users.manage') || hasPerm('departments.manage') || canBuildWorkflows || canViewReports || canViewRecordings || hasPerm('settings.manage')) && (
             <div className="nav-label">مدیریت سامانه</div>
           )}
@@ -326,6 +350,16 @@ export default function App() {
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/profile" element={<Profile />} />
                 <Route path="/notes" element={<Notes />} />
+                <Route path="/crm" element={
+                  <Suspense fallback={<div className="content"><div className="empty">در حال بارگذاری…</div></div>}>
+                    <CRM />
+                  </Suspense>
+                } />
+                <Route path="/leaves" element={
+                  <Suspense fallback={<div className="content"><div className="empty">در حال بارگذاری…</div></div>}>
+                    <Leaves />
+                  </Suspense>
+                } />
                 <Route path="*" element={<Navigate to="/" />} />
               </Routes>
             </Layout>

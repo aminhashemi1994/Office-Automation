@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Building2, Image, Trash2, Save, Printer, DatabaseBackup, Download, Plus, ShieldCheck, Paperclip } from 'lucide-react';
+import { Building2, Image, Trash2, Save, Printer, DatabaseBackup, Download, Plus, ShieldCheck, Paperclip, Handshake, Send } from 'lucide-react';
 import { api, getToken } from '../api.js';
 import { useStore } from '../store.jsx';
 import { Field, Segmented } from '../components/common.jsx';
@@ -98,6 +98,182 @@ function AttachmentsCard() {
         پیوست مجاز باشد — به صفحهٔ «فرآیندهای اداری» و ویرایش همان فرآیند بروید.
         {!on && <span style={{ color: 'var(--red)', fontWeight: 700 }}> در حال حاضر پیوست فایل در کل سامانه غیرفعال است.</span>}
       </p>
+    </div>
+  );
+}
+
+// [CRM] کدام واحدها می‌توانند با بخش CRM کار کنند؟
+// مدیر سامانه و اعضای «واحد مدیریت» همیشه دسترسی دارند و نیازی به انتخاب ندارند.
+function CrmAccessCard() {
+  const { settings, departments, refreshSettings, toast } = useStore();
+  const [busy, setBusy] = useState(false);
+  const enabled = settings.crm_enabled !== '0';
+  let selected = [];
+  try { selected = JSON.parse(settings.crm_dept_ids || '[]').map(Number); } catch {}
+  let full = [];
+  try { full = JSON.parse(settings.crm_full_dept_ids || '[]').map(Number); } catch {}
+  const [reasons, setReasons] = useState(settings.crm_lost_reasons || '');
+
+  const save = async (patch) => {
+    setBusy(true);
+    try {
+      await api('/settings', { method: 'PUT', body: patch });
+      await refreshSettings();
+      toast('دسترسی CRM به‌روز شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
+  const toggleDept = (id) => {
+    const next = selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id];
+    save({ crm_dept_ids: next });
+  };
+
+  // واحدِ «دسترسی کامل» خودبه‌خود دسترسی عادی هم دارد
+  const toggleFull = (id) => {
+    const on = full.includes(id);
+    const nextFull = on ? full.filter(x => x !== id) : [...full, id];
+    const patch = { crm_full_dept_ids: nextFull };
+    if (!on && !selected.includes(id)) patch.crm_dept_ids = [...selected, id];
+    save(patch);
+  };
+
+  return (
+    <div className="card card-pad" style={{ marginTop: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <Handshake size={17} />
+        <b>دسترسی به بخش CRM (مشتریان و فروش)</b>
+        <span style={{ marginInlineStart: 'auto', opacity: busy ? .6 : 1 }}>
+          <Segmented size="sm" value={enabled ? 1 : 0} onChange={v => save({ crm_enabled: v ? '1' : '0' })}
+            options={[
+              { value: 1, label: 'فعال', tone: 'primary' },
+              { value: 0, label: 'غیرفعال', hint: 'ماژول CRM برای همه بسته می‌شود' },
+            ]} />
+        </span>
+      </div>
+      <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.8, margin: '0 0 6px' }}>
+        مدیر سامانه و اعضای «واحد مدیریت» همیشه دسترسی دارند. واحدهای «بازرگانی» و «مدیریت»
+        به‌طور پیش‌فرض دسترسی کامل گرفته‌اند و می‌توانید اینجا تغییرش دهید.
+      </p>
+
+      <div style={{ opacity: enabled ? 1 : .5 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, margin: '12px 0 6px' }}>دسترسی کامل</div>
+        <p style={{ fontSize: 11.8, color: 'var(--text-3)', margin: '0 0 8px', lineHeight: 1.8 }}>
+          دیدن و ویرایش رکوردهای همهٔ کارشناسان، حذف، تعریف فیلد دلخواه و گزارش‌گیریِ کلِ تیم.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {departments.map(d => (
+            <button key={d.id} type="button" disabled={busy || !enabled}
+              className={`btn btn-sm ${full.includes(d.id) ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => toggleFull(d.id)}>{d.name}</button>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 12.5, fontWeight: 700, margin: '16px 0 6px' }}>دسترسی عادی</div>
+        <p style={{ fontSize: 11.8, color: 'var(--text-3)', margin: '0 0 8px', lineHeight: 1.8 }}>
+          کار با مشتریان و ثبت معامله و گزارش — ولی گزارش‌گیری فقط روی معاملات خودشان.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {departments.map(d => {
+            const isFull = full.includes(d.id);
+            return (
+              <button key={d.id} type="button" disabled={busy || !enabled || isFull}
+                title={isFull ? 'این واحد دسترسی کامل دارد' : ''}
+                className={`btn btn-sm ${selected.includes(d.id) ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => toggleDept(d.id)}>{d.name}</button>
+            );
+          })}
+          {!departments.length && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>واحدی تعریف نشده است</span>}
+        </div>
+
+        <div style={{ fontSize: 12.5, fontWeight: 700, margin: '16px 0 6px' }}>دلایل رایج باخت معامله</div>
+        <p style={{ fontSize: 11.8, color: 'var(--text-3)', margin: '0 0 8px', lineHeight: 1.8 }}>
+          با «،» جدا کنید. کارشناس هنگام ثبت باختِ معامله از همین فهرست انتخاب می‌کند تا
+          گزارشِ «دلایل باخت» دسته‌بندیِ درست و قابل‌تحلیل داشته باشد.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input className="input" style={{ flex: 1, minWidth: 260 }} value={reasons} disabled={busy || !enabled}
+            onChange={e => setReasons(e.target.value)} />
+          <button className="btn btn-ghost" disabled={busy || !enabled}
+            onClick={() => save({ crm_lost_reasons: reasons })}><Save size={15} /> ذخیره</button>
+        </div>
+      </div>
+
+      {enabled && selected.length === 0 && full.length === 0 && (
+        <p style={{ fontSize: 12.3, color: 'var(--amber)', marginTop: 10, marginBottom: 0 }}>
+          هنوز هیچ واحدی انتخاب نشده — فعلاً فقط مدیر سامانه و واحد مدیریت به CRM دسترسی دارند.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// [پیامک] جا‌نمایی درگاه — تا وقتی پر نشود، پیامک‌ها فقط «شبیه‌سازی» می‌شوند
+function SmsCard() {
+  const { settings, refreshSettings, toast } = useStore();
+  const [form, setForm] = useState({
+    sms_provider: settings.sms_provider || '',
+    sms_api_url: settings.sms_api_url || '',
+    sms_api_key: settings.sms_api_key || '',
+    sms_sender: settings.sms_sender || '',
+  });
+  const [busy, setBusy] = useState(false);
+  const enabled = settings.sms_enabled === '1';
+  const configured = !!(settings.sms_api_url && settings.sms_api_key);
+
+  const save = async (patch) => {
+    setBusy(true);
+    try {
+      await api('/settings', { method: 'PUT', body: patch });
+      await refreshSettings();
+      toast('تنظیمات پیامک ذخیره شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card card-pad" style={{ marginTop: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <Send size={17} />
+        <b>پیامک (پیگیری مشتریان)</b>
+        <span style={{ marginInlineStart: 'auto', opacity: busy ? .6 : 1 }}>
+          <Segmented size="sm" value={enabled ? 1 : 0} onChange={v => save({ sms_enabled: v ? '1' : '0' })}
+            options={[
+              { value: 1, label: 'ارسال واقعی', tone: 'primary', hint: 'نیازمند تکمیل درگاه' },
+              { value: 0, label: 'شبیه‌سازی', hint: 'پیام‌ها فقط ثبت می‌شوند' },
+            ]} />
+        </span>
+      </div>
+      <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.8, margin: '0 0 12px' }}>
+        در حالت «شبیه‌سازی» هیچ درخواستی به بیرون فرستاده نمی‌شود و پیام‌ها فقط در تاریخچه ثبت
+        می‌شوند — می‌توانید کل جریان کار را تست کنید. برای ارسال واقعی، مشخصات درگاه را وارد کنید
+        و تابع ارسال را در <code>server/sms.js</code> برای درگاه خودتان تکمیل کنید.
+        {enabled && !configured && (
+          <span style={{ color: 'var(--red)', fontWeight: 700 }}> ارسال واقعی روشن است ولی درگاه کامل نشده — همچنان شبیه‌سازی می‌شود.</span>
+        )}
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label="نام درگاه" hint="kavenegar / ghasedak / …">
+          <input className="input" value={form.sms_provider}
+            onChange={e => setForm(f => ({ ...f, sms_provider: e.target.value }))} />
+        </Field>
+        <Field label="شمارهٔ فرستنده">
+          <input className="input" style={{ direction: 'ltr', textAlign: 'left' }} value={form.sms_sender}
+            onChange={e => setForm(f => ({ ...f, sms_sender: e.target.value }))} />
+        </Field>
+        <Field label="آدرس API">
+          <input className="input" style={{ direction: 'ltr', textAlign: 'left' }} value={form.sms_api_url}
+            placeholder="https://api.kavenegar.com/v1"
+            onChange={e => setForm(f => ({ ...f, sms_api_url: e.target.value }))} />
+        </Field>
+        <Field label="کلید API">
+          <input className="input" type="password" style={{ direction: 'ltr', textAlign: 'left' }} value={form.sms_api_key}
+            onChange={e => setForm(f => ({ ...f, sms_api_key: e.target.value }))} />
+        </Field>
+      </div>
+      <button className="btn btn-primary" disabled={busy} onClick={() => save(form)}>
+        <Save size={16} /> ذخیره تنظیمات پیامک
+      </button>
     </div>
   );
 }
@@ -215,6 +391,10 @@ export default function Settings() {
       </div>
 
       <AttachmentsCard />
+
+      <CrmAccessCard />
+
+      <SmsCard />
 
       <BackupCard />
 

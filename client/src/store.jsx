@@ -29,6 +29,7 @@ export function StoreProvider({ children }) {
   const [cartableCount, setCartableCount] = useState(0); // درخواست‌های در انتظار اقدام من
   const [taskCount, setTaskCount] = useState(0);         // تسک‌های انجام‌نشدهٔ من
   const [taskCommentCount, setTaskCommentCount] = useState(0); // کامنت‌های خوانده‌نشدهٔ تسک‌ها
+  const [chatUnread, setChatUnread] = useState(0);             // پیام‌های نخواندهٔ چت (نشانِ سایدبار)
   const [toasts, setToasts] = useState([]);
   const [incomingCall, setIncomingCall] = useState(null); // {room, video, from, title}
   const [activeCall, setActiveCall] = useState(null); // {room, video, title}
@@ -146,6 +147,12 @@ export function StoreProvider({ children }) {
     try { const me = await api('/auth/me'); setUser(me.user); } catch {}
   }, []);
 
+  // شمارِ پیام‌های نخواندهٔ چت — سبک است و با هر پیام جدید/خوانده‌شدن به‌روز می‌شود
+  const refreshChatUnread = useCallback(async () => {
+    try { const r = await api('/chat/unread-count'); setChatUnread(Number(r.unread) || 0); }
+    catch {}
+  }, []);
+
   // شمارندهٔ کارهای در انتظار برای نمایش در سایدبار
   const refreshBadges = useCallback(async () => {
     try {
@@ -159,7 +166,8 @@ export function StoreProvider({ children }) {
         .reduce((s, t) => s + (t.unread_comments || 0), 0);
       setTaskCommentCount(unreadComments);
     } catch {}
-  }, []);
+    refreshChatUnread();
+  }, [refreshChatUnread]);
 
   // اشتراک رویدادهای سوکت برای صفحات
   const on = useCallback((event, fn) => {
@@ -200,6 +208,8 @@ export function StoreProvider({ children }) {
         showOSNotification(m.sender_name || 'پیام جدید', m.content || 'پیام جدید دریافت شد', { tag: `chat-${d.conversation_id || ''}` });
       }
       emitLocal('message:new', d);
+      // نشانِ «پیام نخوانده» کنار گفتگوها بلافاصله به‌روز شود، حتی اگر کاربر در صفحهٔ چت نباشد
+      refreshChatUnread();
     });
     s.on('conversation:new', d => emitLocal('conversation:new', d));
     s.on('typing', d => emitLocal('typing', d));
@@ -235,7 +245,7 @@ export function StoreProvider({ children }) {
     s.on('rtc:signal', d => emitLocal('rtc:signal', d));
     s.on('conversation:left', d => emitLocal('conversation:left', d));
     s.on('task:comment', d => { emitLocal('task:comment', d); refreshBadges(); });
-  }, [toast, refreshBadges, playNotifSound, showOSNotification, playBusySound]);
+  }, [toast, refreshBadges, refreshChatUnread, playNotifSound, showOSNotification, playBusySound]);
 
   const boot = useCallback(async () => {
     if (!getToken()) { setBooted(true); return; }
@@ -318,6 +328,7 @@ export function StoreProvider({ children }) {
       incomingCall, setIncomingCall, activeCall, setActiveCall,
       theme, setTheme, toggleTheme,
       cartableCount, taskCount, taskCommentCount, setCartableCount, setTaskCount, refreshBadges,
+    chatUnread, setChatUnread, refreshChatUnread,
       login, logout, hasPerm, toast, refreshDirectory, refreshNotifs, refreshSettings, reloadUser,
       setNotifications, setUnreadNotifs, on, socketEmit,
       requestNotifPermission, playSystemSound, showOSNotification,

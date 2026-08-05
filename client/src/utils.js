@@ -79,7 +79,10 @@ export function initials(name = '') {
   return name.trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('‌');
 }
 
-const ACTION_FA = { submit: 'ثبت درخواست', approve: 'تایید', reject: 'رد', skip: 'عبور (اختیاری)', comment: 'یادداشت' };
+const ACTION_FA = {
+  submit: 'ثبت درخواست', approve: 'تایید', reject: 'رد', skip: 'عبور (اختیاری)', comment: 'یادداشت',
+  edit: 'ویرایش', return: 'برگشت',
+};
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -230,7 +233,10 @@ export function printRequest(req, statusLabel = '', settings = {}) {
   setTimeout(() => w.print(), 700);
 }
 
-const STATUS_FA = { in_progress: 'در جریان', approved: 'تایید نهایی', rejected: 'رد شده', cancelled: 'لغو شده' };
+const STATUS_FA = {
+  in_progress: 'در جریان', awaiting_requester: 'در انتظار تایید نهایی', returned: 'برگشت برای اصلاح',
+  approved: 'تایید نهایی', rejected: 'رد شده', cancelled: 'لغو شده',
+};
 
 // چاپ فهرست گزارش درخواست‌ها — جهت بایگانی فیزیکی
 export function printReport(rows, filterLabel = '') {

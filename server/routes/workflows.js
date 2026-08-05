@@ -9,6 +9,7 @@ import { notifyUsers } from '../notify.js';
 import { SIGNATURES_DIR, SHARED_FILES_DIR, UPLOADS_DIR } from '../config.js';
 import { deptManagers, canAccessEverywhere, getManagedDeptIds, isManagementMember } from '../acl.js';
 import { activeDeputiesOf } from './delegations.js';
+import { applyLeaveDeduction } from '../leave-hook.js';
 
 const r = Router();
 
@@ -229,6 +230,38 @@ export function canBuildWorkflows(user) {
   return false;
 }
 
+// ============================================================================
+//  [ویرایش / برگشت / تایید نهاییِ درخواست‌دهنده]
+//  وضعیت‌های «باز» یک درخواست:
+//    in_progress        → در جریانِ سلسله‌مراتب تایید
+//    awaiting_requester → همهٔ مراحل تایید شده، منتظر تایید نهاییِ خودِ درخواست‌دهنده
+//    returned           → برای اصلاح به درخواست‌دهنده برگشت داده شده (ویرایش + ارسال مجدد)
+// ============================================================================
+const OPEN_STATUSES = new Set(['in_progress', 'awaiting_requester', 'returned']);
+
+// آیا روی این درخواست تاکنون تایید/عبوری ثبت شده است؟
+function hasAnyApproval(requestId) {
+  return !!db.prepare("SELECT 1 FROM workflow_actions WHERE request_id = ? AND action IN ('approve','skip')").get(requestId);
+}
+
+// چه کسی می‌تواند عنوان/فرمِ درخواست را ویرایش کند؟
+//  • مدیر سامانه یا دارندهٔ workflows.manage → همیشه (اصلاح از صفحهٔ گزارش‌گیری، حتی پس از بسته‌شدن)
+//  • درخواست‌دهنده → تا قبل از اولین تاییدِ سلسله‌مراتب، یا وقتی درخواست برای اصلاح به او برگشته،
+//    یا وقتی درخواست در انتظار تایید نهاییِ خودِ اوست
+function canEditRequest(user, rq) {
+  if (!rq) return false;
+  if (user.role === 'admin' || hasPerm(user, 'workflows.manage')) return true;
+  if (rq.requester_id !== user.id) return false;
+  if (rq.status === 'returned' || rq.status === 'awaiting_requester') return true;
+  if (rq.status === 'in_progress') return !hasAnyApproval(rq.id);
+  return false;
+}
+
+// حذف کاملِ درخواست از سامانه — فقط مدیر سامانه / دارندهٔ workflows.manage
+function canDeleteRequest(user) {
+  return user.role === 'admin' || hasPerm(user, 'workflows.manage');
+}
+
 // افرادِ یک «قاعدهٔ تاییدکننده» (spec) را برمی‌گرداند — بدون fallback به مدیر سامانه
 function resolveSpec(spec, requester, requesterId) {
   if (spec.approver_type === 'user' && spec.approver_id) {
@@ -324,6 +357,14 @@ function currentStepOf(request) {
     .get(request.template_id, request.current_step);
 }
 
+// برچسبِ «مرحلهٔ فعلی» برای فهرست‌ها — شاملِ وضعیت‌های تایید نهایی و برگشت‌خورده
+function stepLabelOf(rq) {
+  if (rq.status === 'in_progress') return currentStepOf(rq)?.title || null;
+  if (rq.status === 'awaiting_requester') return 'در انتظار تایید نهاییِ درخواست‌دهنده';
+  if (rq.status === 'returned') return 'برگشت به درخواست‌دهنده برای اصلاح';
+  return null;
+}
+
 function stepDueAt(step) {
   if (!step?.deadline_hours) return null;
   return new Date(Date.now() + step.deadline_hours * 3600 * 1000).toISOString();
@@ -332,7 +373,7 @@ function stepDueAt(step) {
 function requestDetail(id, userId) {
   const req_ = db.prepare(`
     SELECT r.*, t.name AS template_name, t.form_schema, t.requester_signature,
-           t.notify_requester_on_final, u.full_name AS requester_name,
+           t.notify_requester_on_final, t.requester_final_approval, u.full_name AS requester_name,
            d.name AS requester_department
     FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
@@ -356,7 +397,21 @@ function requestDetail(id, userId) {
     LEFT JOIN workflow_steps s ON s.template_id = ? AND s.step_order = a.step_order
     WHERE a.request_id = ? ORDER BY a.id`).all(req_.template_id, id);
   const cur = steps.find(s => s.step_order === req_.current_step);
-  const can_act = req_.status === 'in_progress' && cur && cur.approvers.includes(userId);
+  const viewer = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  const can_act = req_.status === 'in_progress' && !!cur && cur.approvers.includes(userId);
+  // [تایید نهایی درخواست‌دهنده] درخواست همهٔ مراحل را طی کرده و منتظر تایید نهاییِ خودِ اوست
+  const can_final = req_.status === 'awaiting_requester'
+    && (req_.requester_id === userId || viewer?.role === 'admin');
+  // [برگشت] تاییدکنندهٔ مرحلهٔ فعلی می‌تواند به مراحل قبل یا به درخواست‌دهنده برگرداند؛
+  // درخواست‌دهنده در مرحلهٔ تایید نهایی می‌تواند به «هر مرحله‌ای» برگرداند.
+  const can_return = can_act || can_final;
+  const return_min_step = can_final ? 1 : 0;   // ۰ = برگشت به درخواست‌دهنده برای اصلاح
+  const return_max_step = can_final ? steps.length : Math.max(0, req_.current_step - 1);
+  // [اصلاح] درخواست برای اصلاح برگشته و خودِ درخواست‌دهنده باید دوباره ارسالش کند
+  const can_resubmit = req_.status === 'returned'
+    && (req_.requester_id === userId || viewer?.role === 'admin');
+  const can_edit = viewer ? canEditRequest(viewer, req_) : false;
+  const can_delete = viewer ? canDeleteRequest(viewer) : false;
   // [پیوست‌ها] اطلاعات همهٔ فایل‌های ارجاع‌داده‌شده (فرم + پیوستِ اقدام‌ها + ضمیمهٔ فرآیند)
   let tplAtt = [];
   try { tplAtt = JSON.parse(db.prepare('SELECT attachments FROM workflow_templates WHERE id = ?').get(req_.template_id)?.attachments || '[]'); } catch {}
@@ -370,7 +425,10 @@ function requestDetail(id, userId) {
   const tplRow = db.prepare('SELECT allow_attachments FROM workflow_templates WHERE id = ?').get(req_.template_id);
   const can_attach_action = canAttach(tplRow, cur || null);                 // همراهِ تایید/رد/عبور
   const can_attach_note = canAttach(tplRow, can_act ? cur : null);           // یادداشت/پیوستِ آزاد
-  return { ...req_, steps, actions, can_act, files, can_attach_action, can_attach_note };
+  return {
+    ...req_, steps, actions, files, can_attach_action, can_attach_note,
+    can_act, can_final, can_return, return_min_step, return_max_step, can_resubmit, can_edit, can_delete,
+  };
 }
 
 // [مورد ۱] آیا این کاربر مجاز به دیدن/استفادهٔ این فرآیند است؟
@@ -431,6 +489,32 @@ function createTaskFromRequest(rq, tpl, actorId, opts = {}) {
     });
   }
   return taskId;
+}
+
+// بستنِ درخواست به‌عنوان «تایید نهایی» + اعلان به درخواست‌دهنده + ساخت تسکِ نهایی (در صورت فعال‌بودن)
+function closeAsApproved(rq, tpl, actorId) {
+  db.prepare("UPDATE workflow_requests SET status = 'approved', closed_at = datetime('now') WHERE id = ?").run(rq.id);
+  // [مرخصی] اگر این فرآیند «فرآیند مرخصی» است، مقدارِ مرخصی از ماندهٔ درخواست‌دهنده کم می‌شود
+  applyLeaveDeduction(rq, tpl);
+  // اطلاع به درخواست‌دهنده — طبق تنظیم فرآیند (پیش‌فرض: بله). اگر خودش تایید نهایی کرده، اعلان لازم نیست.
+  if (tpl.notify_requester_on_final !== 0 && rq.requester_id !== actorId) {
+    notifyUsers([rq.requester_id], {
+      type: 'workflow',
+      title: `درخواست تایید نهایی شد: ${tpl.name}`,
+      body: `«${rq.title}» تمام مراحل را با موفقیت طی کرد و تایید نهایی شد`,
+      link: `/cartable/${rq.id}`,
+    });
+  }
+  // [مورد ۷] در صورت فعال‌بودن، پس از تایید نهاییِ کلِ سلسله‌مراتب یک تسک بساز
+  if (!tpl.final_task_enabled) return null;
+  try {
+    return createTaskFromRequest(rq, tpl, actorId, {
+      assignee_type: tpl.final_task_assignee_type,
+      assignee_id: tpl.final_task_assignee_id,
+      deadline_hours: tpl.final_task_deadline_hours,
+      notify: tpl.final_task_notify !== 0,
+    });
+  } catch { return null; }
 }
 
 // ساخت تسک برای یک «مرحله» بر اساس تنظیمات همان مرحله
@@ -508,6 +592,14 @@ function templateExtras(body, prev = {}) {
     final_task_notify: body.final_task_notify !== undefined ? (body.final_task_notify ? 1 : 0) : (prev.final_task_notify ?? 1),
     // [پیوست‌ها] اجازهٔ پیوست فایل توسط افرادِ سلسله‌مراتب در این فرآیند (پیش‌فرض: مجاز)
     allow_attachments: body.allow_attachments !== undefined ? (body.allow_attachments ? 1 : 0) : (prev.allow_attachments ?? 1),
+    // [تایید نهایی درخواست‌دهنده] بعد از آخرین مرحله، درخواست به خودِ درخواست‌دهنده برمی‌گردد
+    requester_final_approval: body.requester_final_approval !== undefined
+      ? (body.requester_final_approval ? 1 : 0) : (prev.requester_final_approval ?? 0),
+    // [مرخصی] این فرآیند یک «درخواست مرخصی» است و پس از تایید نهایی از ماندهٔ کاربر کم می‌کند
+    leave_enabled: body.leave_enabled !== undefined ? (body.leave_enabled ? 1 : 0) : (prev.leave_enabled ?? 0),
+    leave_map: body.leave_map !== undefined
+      ? JSON.stringify(body.leave_map && typeof body.leave_map === 'object' ? body.leave_map : {})
+      : (prev.leave_map ?? '{}'),
   };
 }
 
@@ -520,13 +612,13 @@ r.post('/templates', (req, res) => {
   const result = db.prepare(`INSERT INTO workflow_templates
     (name, description, title_placeholder, form_schema, notify_requester_on_final, requester_signature, created_by,
      scope_dept_ids, attachments, total_deadline_hours, final_task_enabled, final_task_assignee_type, final_task_assignee_id, final_task_deadline_hours, final_task_notify,
-     allow_attachments)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     allow_attachments, requester_final_approval, leave_enabled, leave_map)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(name, description, title_placeholder, JSON.stringify(form_schema),
       notify_requester_on_final ? 1 : 0, requester_signature ? 1 : 0, req.user.id,
       ex.scope_dept_ids, ex.attachments, ex.total_deadline_hours, ex.final_task_enabled,
       ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify,
-      ex.allow_attachments);
+      ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map);
   insertSteps(result.lastInsertRowid, steps);
   res.json({ id: result.lastInsertRowid });
 });
@@ -545,7 +637,7 @@ r.put('/templates/:id', (req, res) => {
     is_active = ?, notify_requester_on_final = ?, requester_signature = ?,
     scope_dept_ids = ?, attachments = ?, total_deadline_hours = ?, final_task_enabled = ?,
     final_task_assignee_type = ?, final_task_assignee_id = ?, final_task_deadline_hours = ?, final_task_notify = ?,
-    allow_attachments = ? WHERE id = ?`)
+    allow_attachments = ?, requester_final_approval = ?, leave_enabled = ?, leave_map = ? WHERE id = ?`)
     .run(name ?? t.name, description ?? t.description,
       title_placeholder ?? t.title_placeholder,
       form_schema !== undefined ? JSON.stringify(form_schema) : t.form_schema,
@@ -554,7 +646,7 @@ r.put('/templates/:id', (req, res) => {
       requester_signature !== undefined ? (requester_signature ? 1 : 0) : t.requester_signature,
       ex.scope_dept_ids, ex.attachments, ex.total_deadline_hours, ex.final_task_enabled,
       ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify,
-      ex.allow_attachments, t.id);
+      ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map, t.id);
   if (steps) {
     const hasOpen = db.prepare("SELECT 1 FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").get(t.id);
     if (hasOpen) return res.status(400).json({ error: 'تا زمانی که درخواست در جریان دارد، مراحل قابل تغییر نیست' });
@@ -611,17 +703,26 @@ r.post('/requests', (req, res) => {
   res.json({ id: result.lastInsertRowid });
 });
 
+// کارهای در انتظار اقدامِ من:
+//  • درخواست‌های در جریان که مسئولِ مرحلهٔ فعلی‌شان هستم
+//  • درخواست‌های خودم که منتظر «تایید نهایی» من هستند یا برای اصلاح به من برگشته‌اند
 r.get('/requests/inbox', (req, res) => {
   const open = db.prepare(`
     SELECT r.*, t.name AS template_name, u.full_name AS requester_name
     FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
     JOIN users u ON u.id = r.requester_id
-    WHERE r.status = 'in_progress' ORDER BY r.id DESC`).all();
+    WHERE r.status IN ('in_progress', 'awaiting_requester', 'returned') ORDER BY r.id DESC`).all();
   const inbox = open.filter(rq => {
+    if (rq.status !== 'in_progress') return rq.requester_id === req.user.id;
     const step = currentStepOf(rq);
     return step && resolveApprovers(step, rq.requester_id).includes(req.user.id);
-  }).map(rq => ({ ...rq, step_title: currentStepOf(rq)?.title, attachments_count: attachmentCount(rq) }));
+  }).map(rq => ({
+    ...rq,
+    step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title
+      : rq.status === 'awaiting_requester' ? 'تایید نهایی شما' : 'اصلاح و ارسال مجدد',
+    attachments_count: attachmentCount(rq),
+  }));
   res.json({ requests: inbox });
 });
 
@@ -630,7 +731,7 @@ r.get('/requests/mine', (req, res) => {
     SELECT r.*, t.name AS template_name FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
     WHERE r.requester_id = ? ORDER BY r.id DESC`).all(req.user.id)
-    .map(rq => ({ ...rq, step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title : null, attachments_count: attachmentCount(rq) }));
+    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq) }));
   res.json({ requests });
 });
 
@@ -665,7 +766,7 @@ r.get('/requests/all', (req, res) => {
   }
   const requests = rows.map(rq => ({
     ...rq,
-    step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title : null,
+    step_title: stepLabelOf(rq),
     attachments_count: attachmentCount(rq),
   }));
   res.json({ requests, scoped: !canAccessEverywhere(u) });
@@ -727,7 +828,7 @@ r.get('/reports', (req, res) => {
         WHERE a.request_id = ? ORDER BY a.id`).all(rq.id);
       return {
         ...rq,
-        step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title : null,
+        step_title: stepLabelOf(rq),
         actions: acts,
         approvals_count: acts.filter(a => a.action === 'approve').length,
         attachments_count: attachmentCount(rq),
@@ -788,41 +889,112 @@ r.post('/requests/:id/renotify', (req, res) => {
 r.post('/requests/:id/action', (req, res) => {
   const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
   if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
-  if (rq.status !== 'in_progress') return res.status(400).json({ error: 'این درخواست بسته شده است' });
-  const { action, comment = '', attachments = [] } = req.body || {};
+  if (!OPEN_STATUSES.has(rq.status)) return res.status(400).json({ error: 'این درخواست بسته شده است' });
+  if (rq.status === 'returned') {
+    return res.status(400).json({ error: 'این درخواست برای اصلاح نزد درخواست‌دهنده است و باید دوباره ارسال شود' });
+  }
+  const { action, comment = '', attachments = [], to_step } = req.body || {};
   const attIds = normalizeFileIds(attachments); // [پیوست‌ها] فایل‌های پیوستِ این اقدام
-  const step = currentStepOf(rq);
-  const approvers = resolveApprovers(step, rq.requester_id);
-  if (!approvers.includes(req.user.id)) return res.status(403).json({ error: 'شما مجاز به اقدام در این مرحله نیستید' });
-  if (!['approve', 'reject', 'skip'].includes(action)) return res.status(400).json({ error: 'اقدام نامعتبر' });
-  if (action === 'skip' && !step.is_optional) return res.status(400).json({ error: 'این مرحله الزامی است و قابل عبور نیست' });
-  // [پیوست‌ها] فقط اگر در این فرآیند/مرحله مجاز باشد
-  if (attIds.length) {
-    const tplRow = db.prepare('SELECT allow_attachments FROM workflow_templates WHERE id = ?').get(rq.template_id);
-    if (!canAttach(tplRow, step)) {
-      return res.status(400).json({ error: 'پیوست فایل در این مرحله مجاز نیست' });
+  const tpl = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(rq.template_id);
+  const steps = getSteps(rq.template_id);
+  // مرحلهٔ «تایید نهاییِ درخواست‌دهنده»: سلسله‌مراتب تمام شده و توپ در زمینِ خودِ درخواست‌دهنده است
+  const finalStage = rq.status === 'awaiting_requester';
+  const step = finalStage ? null : currentStepOf(rq);
+
+  // ---------- چه کسی مجاز به اقدام است؟ ----------
+  if (finalStage) {
+    if (rq.requester_id !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'تایید نهایی این درخواست با درخواست‌دهنده است' });
     }
+    if (!['approve', 'reject', 'return'].includes(action)) return res.status(400).json({ error: 'اقدام نامعتبر' });
+  } else {
+    if (!step) return res.status(400).json({ error: 'مرحله فعلی نامعتبر است' });
+    const approvers = resolveApprovers(step, rq.requester_id);
+    if (!approvers.includes(req.user.id)) return res.status(403).json({ error: 'شما مجاز به اقدام در این مرحله نیستید' });
+    if (!['approve', 'reject', 'skip', 'return'].includes(action)) return res.status(400).json({ error: 'اقدام نامعتبر' });
+    if (action === 'skip' && !step.is_optional) return res.status(400).json({ error: 'این مرحله الزامی است و قابل عبور نیست' });
+  }
+  // [پیوست‌ها] فقط اگر در این فرآیند/مرحله مجاز باشد
+  if (attIds.length && !canAttach(tpl, step)) {
+    return res.status(400).json({ error: 'پیوست فایل در این مرحله مجاز نیست' });
   }
 
+  const stepLabel = finalStage ? 'تایید نهایی درخواست‌دهنده' : step.title;
   // اگر کاربر تاییدکنندهٔ مستقیم نبوده و فقط به‌واسطهٔ نیابت اقدام می‌کند، در سابقه ثبت شود
-  const direct = resolveApprovers(step, rq.requester_id, { withDeputies: false });
-  const isDeputy = !direct.includes(req.user.id);
-  const finalComment = isDeputy ? `(به نیابت) ${comment}`.trim() : comment;
-  db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(rq.id, rq.current_step, req.user.id, action, finalComment, JSON.stringify(attIds));
+  const isDeputy = !finalStage && !resolveApprovers(step, rq.requester_id, { withDeputies: false }).includes(req.user.id);
   const attNote = attIds.length ? ` (${attIds.length.toLocaleString('fa-IR')} فایل پیوست)` : '';
+  const logAction = (kind, text) =>
+    db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(rq.id, rq.current_step, req.user.id, kind, text, JSON.stringify(attIds));
 
-  const tpl = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(rq.template_id);
+  // ---------- برگشتِ درخواست به یک مرحلهٔ قبلی یا به خودِ درخواست‌دهنده ----------
+  // to_step === 0 یعنی «برگشت به درخواست‌دهنده برای اصلاح».
+  // تاییدکنندهٔ مرحلهٔ فعلی فقط می‌تواند به مراحلِ قبل‌تر برگرداند؛
+  // درخواست‌دهنده در مرحلهٔ تایید نهایی می‌تواند به «اول یا هر مرحله‌ای» برگرداند.
+  if (action === 'return') {
+    const target = Number(to_step);
+    const maxStep = finalStage ? steps.length : rq.current_step - 1;
+    const minStep = finalStage ? 1 : 0;
+    if (!Number.isInteger(target) || target < minStep || target > maxStep) {
+      return res.status(400).json({ error: 'مرحلهٔ مقصدِ برگشت نامعتبر است' });
+    }
+    const back = target === 0 ? null : steps.find(s => s.step_order === target);
+    const label = back ? `مرحلهٔ «${back.title}»` : 'درخواست‌دهنده برای اصلاح';
+    logAction('return', `برگشت به ${label}${isDeputy ? ' (به نیابت)' : ''}${comment ? ' — ' + comment : ''}`);
+
+    if (!back) {
+      // پس از اصلاح، درخواست از کدام مرحله ادامه پیدا کند؟ پیش‌فرض: همین مرحله‌ای که برگشتش داده
+      const resume = steps.some(s => s.step_order === Number(req.body?.resume_step))
+        ? Number(req.body.resume_step) : Math.max(1, rq.current_step);
+      db.prepare(`UPDATE workflow_requests SET status = 'returned', resume_step = ?, step_due_at = NULL,
+        last_reminded_at = NULL WHERE id = ?`).run(resume, rq.id);
+      notifyUsers([rq.requester_id], {
+        type: 'workflow',
+        title: `درخواست برای اصلاح برگشت خورد: ${tpl.name}`,
+        body: `«${rq.title}» در مرحله «${stepLabel}» توسط ${req.user.full_name} برای اصلاح به شما برگشت داده شد${comment ? ' — ' + comment : ''}${attNote}`,
+        link: `/cartable/${rq.id}`,
+      });
+      return res.json({ ok: true, status: 'returned' });
+    }
+
+    db.prepare(`UPDATE workflow_requests SET status = 'in_progress', current_step = ?, step_due_at = ?,
+      last_reminded_at = NULL, closed_at = NULL WHERE id = ?`).run(back.step_order, stepDueAt(back), rq.id);
+    notifyApprovers(back, resolveApprovers(back, rq.requester_id), {
+      type: 'workflow',
+      title: `کارتابل: ${tpl.name}`,
+      body: `«${rq.title}» توسط ${req.user.full_name} به مرحله «${back.title}» برگشت داده شد و در انتظار اقدام شماست${comment ? ' — ' + comment : ''}`,
+      link: `/cartable/${rq.id}`,
+    });
+    if (rq.requester_id !== req.user.id) {
+      notifyUsers([rq.requester_id], {
+        type: 'workflow',
+        title: `برگشت درخواست: ${tpl.name}`,
+        body: `«${rq.title}» از مرحله «${stepLabel}» به مرحله «${back.title}» برگشت داده شد`,
+        link: `/cartable/${rq.id}`,
+      });
+    }
+    return res.json({ ok: true, status: 'in_progress', current_step: back.step_order });
+  }
+
+  logAction(action, isDeputy ? `(به نیابت) ${comment}`.trim() : comment);
 
   if (action === 'reject') {
     db.prepare("UPDATE workflow_requests SET status = 'rejected', closed_at = datetime('now') WHERE id = ?").run(rq.id);
-    notifyUsers([rq.requester_id], {
-      type: 'workflow',
-      title: `درخواست رد شد: ${tpl.name}`,
-      body: `«${rq.title}» در مرحله «${step.title}» توسط ${req.user.full_name} رد شد${comment ? ' — ' + comment : ''}${attNote}`,
-      link: `/cartable/${rq.id}`,
-    });
+    if (rq.requester_id !== req.user.id) {
+      notifyUsers([rq.requester_id], {
+        type: 'workflow',
+        title: `درخواست رد شد: ${tpl.name}`,
+        body: `«${rq.title}» در مرحله «${stepLabel}» توسط ${req.user.full_name} رد شد${comment ? ' — ' + comment : ''}${attNote}`,
+        link: `/cartable/${rq.id}`,
+      });
+    }
     return res.json({ ok: true, status: 'rejected' });
+  }
+
+  // ---------- تایید نهایی توسط خودِ درخواست‌دهنده ----------
+  if (finalStage) {
+    const createdTaskId = closeAsApproved(rq, tpl, req.user.id);
+    return res.json({ ok: true, status: 'approved', task_id: createdTaskId });
   }
 
   // [مورد ۷+] اگر این مرحله «ساخت تسک» دارد، هنگام تاییدِ همین مرحله تسک ساخته می‌شود.
@@ -833,31 +1005,22 @@ r.post('/requests/:id/action', (req, res) => {
   }
 
   // approve و skip هر دو به مرحله بعد می‌روند (skip فقط برای مراحل اختیاری)
-  const steps = getSteps(rq.template_id);
   const next = steps.find(s => s.step_order === rq.current_step + 1);
   if (!next) {
-    db.prepare("UPDATE workflow_requests SET status = 'approved', closed_at = datetime('now') WHERE id = ?").run(rq.id);
-    // اطلاع به درخواست‌دهنده بعد از تایید نهایی — طبق تنظیم فرآیند (پیش‌فرض: بله)
-    if (tpl.notify_requester_on_final !== 0) {
+    // [تایید نهایی درخواست‌دهنده] اگر این گزینه در فرآیند روشن باشد، درخواست بسته نمی‌شود و
+    // برای تایید نهایی (یا برگشت به هر مرحله) به کارتابلِ خودِ درخواست‌دهنده می‌رود.
+    if (tpl.requester_final_approval && rq.requester_id !== req.user.id) {
+      db.prepare(`UPDATE workflow_requests SET status = 'awaiting_requester', step_due_at = NULL,
+        last_reminded_at = NULL WHERE id = ?`).run(rq.id);
       notifyUsers([rq.requester_id], {
         type: 'workflow',
-        title: `درخواست تایید نهایی شد: ${tpl.name}`,
-        body: `«${rq.title}» تمام مراحل را با موفقیت طی کرد و تایید نهایی شد`,
+        title: `در انتظار تایید نهایی شما: ${tpl.name}`,
+        body: `«${rq.title}» همهٔ مراحل تایید را طی کرد و برای تایید نهایی در کارتابل شماست`,
         link: `/cartable/${rq.id}`,
       });
+      return res.json({ ok: true, status: 'awaiting_requester' });
     }
-    // [مورد ۷] در صورت فعال‌بودن، پس از تایید نهاییِ کلِ سلسله‌مراتب یک تسک بساز
-    let createdTaskId = null;
-    if (tpl.final_task_enabled) {
-      try {
-        createdTaskId = createTaskFromRequest(rq, tpl, req.user.id, {
-          assignee_type: tpl.final_task_assignee_type,
-          assignee_id: tpl.final_task_assignee_id,
-          deadline_hours: tpl.final_task_deadline_hours,
-          notify: tpl.final_task_notify !== 0,
-        });
-      } catch {}
-    }
+    const createdTaskId = closeAsApproved(rq, tpl, req.user.id);
     return res.json({ ok: true, status: 'approved', task_id: createdTaskId });
   }
 
@@ -940,11 +1103,109 @@ r.post('/requests/:id/make-task', (req, res) => {
   res.json({ ok: true, task_id: taskId });
 });
 
+// ---------- ویرایش، ارسال مجدد و حذفِ درخواست ----------
+// اصلاح عنوان و اطلاعات فرم. تغییرات همیشه در تاریخچهٔ درخواست ثبت می‌شود تا
+// تاییدکنندگان بدانند فرم بعد از ثبت عوض شده است.
+r.put('/requests/:id', (req, res) => {
+  const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  if (!canEditRequest(req.user, rq)) {
+    return res.status(403).json({ error: 'این درخواست در وضعیت فعلی برای شما قابل ویرایش نیست' });
+  }
+  const tpl = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(rq.template_id);
+  const { title, form_data } = req.body || {};
+  const newTitle = title !== undefined ? String(title).trim() : rq.title;
+  if (!newTitle) return res.status(400).json({ error: 'عنوان الزامی است' });
+
+  let schema = [];
+  try { schema = JSON.parse(tpl?.form_schema || '[]'); } catch {}
+  if (!Array.isArray(schema)) schema = [];
+  let oldData = {};
+  try { oldData = JSON.parse(rq.form_data || '{}'); } catch {}
+  let newData = oldData;
+  if (form_data !== undefined && form_data !== null) {
+    newData = { ...form_data };
+    // [پیوست‌ها] مقدارِ فیلدهای فایلی همیشه آرایه‌ای از idهای معتبر ذخیره می‌شود
+    for (const f of schema) {
+      if (f && FILE_FIELD_TYPES.has(f.type)) newData[f.key] = normalizeFileIds(fieldFileIds(newData[f.key]));
+    }
+  }
+
+  // خلاصهٔ خواناى تغییرات برای تاریخچه
+  const changed = [];
+  if (newTitle !== rq.title) changed.push(`عنوان درخواست`);
+  for (const f of schema) {
+    if (!f?.key) continue;
+    if (JSON.stringify(oldData?.[f.key] ?? null) !== JSON.stringify(newData?.[f.key] ?? null)) {
+      changed.push(f.label || f.key);
+    }
+  }
+  db.prepare("UPDATE workflow_requests SET title = ?, form_data = ?, edited_at = datetime('now') WHERE id = ?")
+    .run(newTitle, JSON.stringify(newData), rq.id);
+  db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, ?, ?, ?, ?)')
+    .run(rq.id, rq.current_step, req.user.id, 'edit',
+      changed.length ? `ویرایش درخواست — ${changed.join('، ')}` : 'ویرایش درخواست (بدون تغییر محتوایی)');
+
+  // اطلاع به درخواست‌دهنده و مسئولان مرحلهٔ فعلی (جز خودِ ویرایش‌کننده)
+  const targets = new Set([rq.requester_id]);
+  if (rq.status === 'in_progress') {
+    const step = currentStepOf(rq);
+    if (step) resolveApprovers(step, rq.requester_id).forEach(id => targets.add(id));
+  }
+  targets.delete(req.user.id);
+  if (targets.size && changed.length) {
+    notifyUsers([...targets], {
+      type: 'workflow',
+      title: `ویرایش درخواست: ${tpl?.name || ''}`,
+      body: `«${newTitle}» توسط ${req.user.full_name} ویرایش شد — ${changed.join('، ')}`,
+      link: `/cartable/${rq.id}`,
+    });
+  }
+  res.json({ ok: true, request: requestDetail(rq.id, req.user.id) });
+});
+
+// ارسال مجددِ درخواستی که برای اصلاح به درخواست‌دهنده برگشت داده شده است
+r.post('/requests/:id/resubmit', (req, res) => {
+  const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  if (rq.status !== 'returned') return res.status(400).json({ error: 'این درخواست در وضعیت «برگشت برای اصلاح» نیست' });
+  if (rq.requester_id !== req.user.id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'فقط درخواست‌دهنده می‌تواند درخواست را دوباره ارسال کند' });
+  }
+  const steps = getSteps(rq.template_id);
+  if (!steps.length) return res.status(400).json({ error: 'این فرآیند مرحله‌ای ندارد' });
+  const target = steps.find(s => s.step_order === Number(rq.resume_step)) || steps[0];
+  const tpl = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(rq.template_id);
+  db.prepare(`UPDATE workflow_requests SET status = 'in_progress', current_step = ?, step_due_at = ?,
+    last_reminded_at = NULL, closed_at = NULL WHERE id = ?`).run(target.step_order, stepDueAt(target), rq.id);
+  db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, ?, ?, ?, ?)')
+    .run(rq.id, target.step_order, req.user.id, 'submit', `ارسال مجدد پس از اصلاح — به مرحلهٔ «${target.title}»`);
+  notifyApprovers(target, resolveApprovers(target, rq.requester_id), {
+    type: 'workflow',
+    title: `کارتابل: ${tpl?.name || ''}`,
+    body: `«${rq.title}» پس از اصلاح توسط ${req.user.full_name} دوباره ارسال شد و در انتظار اقدام شماست (${target.title})`,
+    link: `/cartable/${rq.id}`,
+  });
+  res.json({ ok: true, current_step: target.step_order });
+});
+
+// حذف کاملِ درخواست به‌همراه تاریخچه‌اش — فقط مدیر سامانه / دارندهٔ workflows.manage
+r.delete('/requests/:id', (req, res) => {
+  const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  if (!canDeleteRequest(req.user)) {
+    return res.status(403).json({ error: 'فقط مدیر سامانه می‌تواند درخواست را حذف کند' });
+  }
+  db.prepare('DELETE FROM workflow_actions WHERE request_id = ?').run(rq.id);
+  db.prepare('DELETE FROM workflow_requests WHERE id = ?').run(rq.id);
+  res.json({ ok: true });
+});
+
 r.post('/requests/:id/cancel', (req, res) => {
   const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
   if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
   if (rq.requester_id !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'دسترسی غیرمجاز' });
-  if (rq.status !== 'in_progress') return res.status(400).json({ error: 'این درخواست بسته شده است' });
+  if (!OPEN_STATUSES.has(rq.status)) return res.status(400).json({ error: 'این درخواست بسته شده است' });
   db.prepare("UPDATE workflow_requests SET status = 'cancelled', closed_at = datetime('now') WHERE id = ?").run(rq.id);
   db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, ?, ?, ?, ?)')
     .run(rq.id, rq.current_step, req.user.id, 'comment', 'درخواست لغو شد');

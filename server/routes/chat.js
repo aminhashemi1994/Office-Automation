@@ -103,6 +103,21 @@ function convWithMeta(c, userId) {
   return { ...c, display_name, other_id, is_blocked, my_is_admin, members, last_message: last || null, unread };
 }
 
+// شمارِ کلِ پیام‌های نخواندهٔ کاربر در همهٔ گفتگوها — برای نشانِ کنارِ «گفتگوها» در سایدبار.
+// پیام‌های خودِ کاربر و پیام‌هایی که تاریخچه‌شان را پاک کرده شمرده نمی‌شوند.
+r.get('/unread-count', (req, res) => {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(
+      (SELECT COUNT(*) FROM messages m
+        WHERE m.conversation_id = cm.conversation_id
+          AND m.id > MAX(cm.last_read_message_id, cm.cleared_before)
+          AND m.sender_id != cm.user_id AND m.deleted = 0)
+    ), 0) AS total
+    FROM conversation_members cm
+    WHERE cm.user_id = ? AND cm.hidden = 0`).get(req.user.id);
+  res.json({ unread: Number(row?.total || 0) });
+});
+
 r.get('/conversations', (req, res) => {
   const convs = db.prepare(`
     SELECT c.* FROM conversations c

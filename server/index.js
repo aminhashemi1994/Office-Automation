@@ -17,6 +17,8 @@ import settingsRoutes from './routes/settings.js';
 import notesRoutes from './routes/notes.js';
 import delegationRoutes from './routes/delegations.js';
 import backupRoutes from './routes/backups.js';
+import crmRoutes from './routes/crm.js';
+import leaveRoutes from './routes/leaves.js';
 import { setupSocket } from './socket.js';
 import { startReminderEngine } from './reminders.js';
 import { startBackupEngine } from './backup.js';
@@ -45,6 +47,8 @@ app.use('/api/settings', authMiddleware, settingsRoutes);
 app.use('/api/notes', authMiddleware, notesRoutes);
 app.use('/api/delegations', authMiddleware, delegationRoutes);
 app.use('/api/backups', authMiddleware, backupRoutes);
+app.use('/api/crm', authMiddleware, crmRoutes);
+app.use('/api/leaves', authMiddleware, leaveRoutes);
 
 // خروجی ساخته‌شده فرانت‌اند
 const dist = path.join(__dirname, '..', 'client', 'dist');

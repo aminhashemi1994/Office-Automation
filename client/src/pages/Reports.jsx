@@ -1,17 +1,24 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Printer, Search, FileText, Paperclip } from 'lucide-react';
+import { Printer, Search, FileText, Paperclip, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtDateTime, fmtDate, fa, printReport } from '../utils.js';
-import { STATUS } from './Cartable.jsx';
+import { Modal, Field } from '../components/common.jsx';
+import RequestFormFields, { validateRequestForm } from '../components/RequestForm.jsx';
+import { STATUS, OPEN_STATUSES } from './Cartable.jsx';
 
 export default function Reports() {
-  const { departments, toast } = useStore();
+  const { departments, settings, user, hasPerm, toast } = useStore();
   const [templates, setTemplates] = useState([]);
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [filters, setFilters] = useState({ template_id: '', status: '', department_id: '', from: '', to: '' });
+  const [edit, setEdit] = useState(null);             // {row, title, data} — ویرایش درخواست از بایگانی
+  const [confirmDel, setConfirmDel] = useState(null); // ردیفی که در آستانهٔ حذف است
+
+  // ویرایش و حذفِ درخواست‌های بایگانی‌شده فقط برای مدیر سامانه/دارندهٔ workflows.manage
+  const canManage = user?.role === 'admin' || hasPerm('workflows.manage');
 
   useEffect(() => {
     api('/workflows/templates').then(r => setTemplates(r.templates)).catch(() => {});
@@ -30,11 +37,51 @@ export default function Reports() {
 
   const setF = (patch) => setFilters(f => ({ ...f, ...patch }));
 
+  // فرمِ فرآیندِ همین درخواست (برای ویرایش)
+  const schemaOf = (row) => {
+    const tpl = templates.find(t => t.id === row.template_id);
+    try { return JSON.parse(tpl?.form_schema || '[]'); } catch { return []; }
+  };
+
+  const openEdit = (row) => {
+    let data = {};
+    try { data = JSON.parse(row.form_data || '{}'); } catch {}
+    setEdit({ row, title: row.title, data });
+  };
+
+  const submitEdit = async () => {
+    const err = validateRequestForm(schemaOf(edit.row), edit.data, {
+      attachmentsOff: settings?.attachments_enabled === '0', allowPast: true,
+    });
+    if (err) return toast(err, 'error');
+    setBusy(true);
+    try {
+      await api(`/workflows/requests/${edit.row.id}`, { method: 'PUT', body: { title: edit.title, form_data: edit.data } });
+      setEdit(null);
+      await load();
+      toast('درخواست ویرایش شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await api(`/workflows/requests/${confirmDel.id}`, { method: 'DELETE' });
+      setConfirmDel(null);
+      await load();
+      toast('درخواست حذف شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
   const summary = {
     total: rows.length,
     approved: rows.filter(r => r.status === 'approved').length,
     rejected: rows.filter(r => r.status === 'rejected').length,
-    in_progress: rows.filter(r => r.status === 'in_progress').length,
+    // وضعیت‌های باز (در جریان، در انتظار تایید نهایی، برگشت برای اصلاح) با هم شمرده می‌شوند
+    // تا جمع کارت‌ها با «کل» بخواند
+    in_progress: rows.filter(r => OPEN_STATUSES.includes(r.status)).length,
   };
 
   const activeFilterLabels = () => {
@@ -137,7 +184,18 @@ export default function Reports() {
                     <td>{fa(r.approvals_count || 0)}</td>
                     <td style={{ color: 'var(--text-3)', fontSize: 12.5 }}>{fmtDate(r.created_at)}</td>
                     <td>
-                      <Link to={`/cartable/${r.id}`} className="icon-btn" style={{ width: 30, height: 30 }} title="مشاهده و چاپ"><FileText size={14} /></Link>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <Link to={`/cartable/${r.id}`} className="icon-btn" style={{ width: 30, height: 30 }} title="مشاهده و چاپ"><FileText size={14} /></Link>
+                        {/* ویرایش و حذفِ درخواست مستقیماً از بایگانی */}
+                        {canManage && (
+                          <>
+                            <button className="icon-btn" style={{ width: 30, height: 30 }} title="ویرایش درخواست"
+                              onClick={() => openEdit(r)}><Pencil size={14} /></button>
+                            <button className="icon-btn" style={{ width: 30, height: 30, color: 'var(--red)' }} title="حذف درخواست"
+                              onClick={() => setConfirmDel(r)}><Trash2 size={14} /></button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -146,6 +204,38 @@ export default function Reports() {
           </table>
         )}
       </div>
+
+      {/* ویرایش درخواست از صفحهٔ گزارش‌گیری */}
+      {edit && (
+        <Modal title={`ویرایش درخواست «${edit.row.title}»`} onClose={() => setEdit(null)} wide
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setEdit(null)}>انصراف</button>
+            <button className="btn btn-primary" disabled={busy || !edit.title.trim()} onClick={submitEdit}>ذخیره تغییرات</button>
+          </>}>
+          <p style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 0 }}>
+            تغییرات به‌همراه فهرست فیلدهای عوض‌شده در تاریخچهٔ درخواست ثبت و به افرادِ درگیر اعلام می‌شود.
+          </p>
+          <Field label="عنوان درخواست">
+            <input className="input" value={edit.title} autoFocus onChange={e => setEdit(v => ({ ...v, title: e.target.value }))} />
+          </Field>
+          <RequestFormFields schema={schemaOf(edit.row)} data={edit.data} allowPast
+            onChange={d => setEdit(v => ({ ...v, data: d }))} />
+        </Modal>
+      )}
+
+      {/* حذف درخواست از بایگانی */}
+      {confirmDel && (
+        <Modal title="حذف درخواست" onClose={() => setConfirmDel(null)}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setConfirmDel(null)}>انصراف</button>
+            <button className="btn btn-danger" disabled={busy} onClick={remove}>بله، حذف کن</button>
+          </>}>
+          <p style={{ fontSize: 13.5, margin: 0 }}>
+            درخواست «{confirmDel.title}» ({confirmDel.template_name}) به‌همراه تمام تاریخچهٔ اقدامات آن
+            برای همیشه حذف می‌شود. این کار بازگشت‌پذیر نیست.
+          </p>
+        </Modal>
+      )}
     </div>
   );
 }
