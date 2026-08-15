@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import db from '../db.js';
 import { requirePerm, hasPerm } from '../auth.js';
+import { notifyUsers } from '../notify.js';
 import { AVATARS_DIR, SIGNATURES_DIR, SOUNDS_DIR } from '../config.js';
 
 const r = Router();
@@ -213,6 +214,45 @@ r.put('/users/:id', requirePerm('users.manage'), (req, res) => {
       permissions !== undefined ? JSON.stringify(permissions) : u.permissions, u.id);
   if (password) db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(String(password), 10), u.id);
   if (managed_dept_ids !== undefined) syncManagedDepts(u.id, managed_dept_ids);
+  res.json({ ok: true });
+});
+
+// ---------- درخواست‌های بازنشانی رمز عبور ----------
+// کاربری که رمزش را فراموش کرده اینجا دیده می‌شود و مدیر رمز تازه‌ای برایش می‌گذارد.
+r.get('/password-resets', requirePerm('users.manage'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT pr.*, u.full_name, u.username, u.phone, d.name AS department_name
+    FROM password_resets pr
+    LEFT JOIN users u ON u.id = pr.user_id
+    LEFT JOIN departments d ON d.id = u.department_id
+    WHERE pr.status = 'pending' AND pr.user_id IS NOT NULL
+    ORDER BY pr.id DESC LIMIT 50`).all();
+  res.json({ requests: rows });
+});
+
+r.post('/password-resets/:id/handle', requirePerm('users.manage'), (req, res) => {
+  const pr = db.prepare('SELECT * FROM password_resets WHERE id = ?').get(req.params.id);
+  if (!pr || !pr.user_id) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  const password = String(req.body?.password || '');
+  if (password.length < 6) return res.status(400).json({ error: 'رمز جدید باید حداقل ۶ کاراکتر باشد' });
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(password, 10), pr.user_id);
+  db.prepare(`UPDATE password_resets SET status = 'done', handled_by = ?, handled_at = datetime('now')
+    WHERE id = ?`).run(req.user.id, pr.id);
+  // بقیهٔ درخواست‌های بازِ همین کاربر هم بسته می‌شوند
+  db.prepare("UPDATE password_resets SET status = 'expired' WHERE user_id = ? AND status = 'pending' AND id != ?")
+    .run(pr.user_id, pr.id);
+  notifyUsers([pr.user_id], {
+    type: 'info',
+    title: '🔑 رمز عبور شما بازنشانی شد',
+    body: 'مدیر سامانه رمز تازه‌ای برای شما تعیین کرد. پس از ورود، از صفحهٔ پروفایل آن را تغییر دهید.',
+    link: '/profile',
+  });
+  res.json({ ok: true });
+});
+
+r.delete('/password-resets/:id', requirePerm('users.manage'), (req, res) => {
+  db.prepare(`UPDATE password_resets SET status = 'rejected', handled_by = ?, handled_at = datetime('now')
+    WHERE id = ?`).run(req.user.id, req.params.id);
   res.json({ ok: true });
 });
 

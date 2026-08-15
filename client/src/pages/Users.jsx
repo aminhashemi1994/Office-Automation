@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, Pencil, Search, Trash2, Camera } from 'lucide-react';
+import { Plus, Pencil, Search, Trash2, Camera, KeyRound, X } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
+import { fmtRelative } from '../utils.js';
 import { Modal, Field, Avatar, Segmented, UserPicker } from '../components/common.jsx';
 import ImageCropper from '../components/ImageCropper.jsx';
 
@@ -18,7 +19,15 @@ export default function UsersPage() {
   const [editing, setEditing] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [search, setSearch] = useState('');
+  const [resets, setResets] = useState([]);       // درخواست‌های بازنشانی رمز
+  const [resetting, setResetting] = useState(null);
   const canManage = hasPerm('users.manage');
+
+  const loadResets = async () => {
+    if (!canManage) return;
+    try { setResets((await api('/password-resets')).requests); } catch {}
+  };
+  useEffect(() => { loadResets(); }, [canManage]);
   const filtered = users.filter(u => !search
     || u.full_name.includes(search) || u.username.includes(search)
     || (u.department_name || '').includes(search) || (u.position || '').includes(search));
@@ -34,6 +43,34 @@ export default function UsersPage() {
 
   return (
     <div className="content">
+      {/* کاربرانی که رمزشان را فراموش کرده‌اند — تا درخواستشان گم نشود */}
+      {canManage && resets.length > 0 && (
+        <div className="card card-pad" style={{ marginBottom: 16, borderColor: 'var(--amber)', background: 'var(--amber-soft)' }}>
+          <b style={{ display: 'block', marginBottom: 8, fontSize: 13.5 }}>
+            <KeyRound size={15} style={{ verticalAlign: '-3px', marginLeft: 5 }} />
+            {resets.length.toLocaleString('fa-IR')} درخواست بازنشانی رمز عبور
+          </b>
+          {resets.map(rq => (
+            <div key={rq.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '6px 0', fontSize: 12.8 }}>
+              <b>{rq.full_name}</b>
+              <span style={{ color: 'var(--text-2)', direction: 'ltr' }}>{rq.username}</span>
+              {rq.department_name && <span className="badge badge-gray">{rq.department_name}</span>}
+              <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}>{fmtRelative(rq.created_at)}</span>
+              <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 6 }}>
+                <button className="btn btn-primary btn-sm" onClick={() => setResetting({ ...rq, password: '' })}>
+                  تعیین رمز تازه
+                </button>
+                <button className="btn btn-ghost btn-sm" title="نادیده بگیر"
+                  onClick={async () => {
+                    try { await api(`/password-resets/${rq.id}`, { method: 'DELETE' }); loadResets(); }
+                    catch (e) { toast(e.message, 'error'); }
+                  }}><X size={14} /></button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="page-head">
         <h2>کاربران سامانه</h2>
         <div style={{ display: 'flex', gap: 10 }}>
@@ -85,6 +122,30 @@ export default function UsersPage() {
           onClose={() => setEditing(null)}
           onDone={async () => { setEditing(null); await refreshDirectory(); toast('ذخیره شد'); }} />
       )}
+      {resetting && (
+        <Modal title={`رمز تازه برای «${resetting.full_name}»`} onClose={() => setResetting(null)}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setResetting(null)}>انصراف</button>
+            <button className="btn btn-primary" disabled={(resetting.password || '').length < 6}
+              onClick={async () => {
+                try {
+                  await api(`/password-resets/${resetting.id}/handle`, { method: 'POST', body: { password: resetting.password } });
+                  setResetting(null); loadResets();
+                  toast('رمز تازه تعیین شد و به کاربر اطلاع داده شد');
+                } catch (e) { toast(e.message, 'error'); }
+              }}>ذخیره رمز</button>
+          </>}>
+          <p style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 0, lineHeight: 1.9 }}>
+            رمز تازه را اینجا بگذارید و شفاهی به کاربر بدهید. به او اعلان می‌رود که پس از ورود،
+            رمز را از صفحهٔ پروفایل خودش عوض کند.
+          </p>
+          <Field label="رمز عبور جدید (حداقل ۶ کاراکتر)">
+            <input className="input" autoFocus dir="ltr" style={{ textAlign: 'left' }} value={resetting.password}
+              onChange={e => setResetting(v => ({ ...v, password: e.target.value }))} />
+          </Field>
+        </Modal>
+      )}
+
       {confirmDel && (
         <Modal title="حذف کاربر" onClose={() => setConfirmDel(null)}
           footer={<>

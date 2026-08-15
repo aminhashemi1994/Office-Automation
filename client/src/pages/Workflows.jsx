@@ -218,6 +218,8 @@ function TemplateModal({ tpl, onClose, onDone }) {
   const [requesterSig, setRequesterSig] = useState(tpl ? tpl.requester_signature !== 0 : true);
   // [تایید نهایی درخواست‌دهنده] پس از آخرین مرحله، درخواست برای تصمیم نهایی به خودِ او برمی‌گردد
   const [requesterFinal, setRequesterFinal] = useState(!!tpl?.requester_final_approval);
+  // [تاریخ گذشته] تا چند روزِ قبل می‌شود برای این فرآیند درخواست ثبت کرد
+  const [pastDays, setPastDays] = useState(tpl?.past_days_limit ?? 0);
   // [مرخصی] این فرآیند یک «درخواست مرخصی» است و پس از تایید نهایی از ماندهٔ کاربر کم می‌کند
   const [leaveOn, setLeaveOn] = useState(!!tpl?.leave_enabled);
   const [leaveMap, setLeaveMap] = useState(() => {
@@ -274,6 +276,7 @@ function TemplateModal({ tpl, onClose, onDone }) {
         name, description, title_placeholder: titlePlaceholder, form_schema: fields, steps,
         notify_requester_on_final: notifyFinal, requester_signature: requesterSig,
         requester_final_approval: requesterFinal,
+        past_days_limit: Number(pastDays) || 0,
         leave_enabled: leaveOn,
         leave_map: leaveMap,
         scope_dept_ids: scopeDeptIds.map(Number),
@@ -315,6 +318,21 @@ function TemplateModal({ tpl, onClose, onDone }) {
             options={[{ value: 1, label: 'درج شود', tone: 'primary' }, { value: 0, label: 'درج نشود' }]} />
         </Field>
       </div>
+
+      {/* [تاریخ گذشته] مثلاً کسی که هفتهٔ پیش مرخصی بوده باید بتواند حالا ثبتش کند */}
+      <Field label="ثبت برای تاریخ گذشته (روز)"
+        hint="۰ یعنی فقط از امروز به بعد. مثلاً ۱۴ یعنی کاربر می‌تواند تا دو هفتهٔ قبل هم تاریخ انتخاب کند — برای فرآیند مرخصی معمولاً لازم است.">
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input className="input" type="number" min="0" max="365" style={{ width: 110 }} value={pastDays}
+            onChange={e => setPastDays(Number(e.target.value))} />
+          {[0, 7, 14, 30].map(d => (
+            <button key={d} type="button" className={`btn btn-sm ${Number(pastDays) === d ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setPastDays(d)}>
+              {d === 0 ? 'فقط از امروز' : `${d.toLocaleString('fa-IR')} روز`}
+            </button>
+          ))}
+        </div>
+      </Field>
 
       {/* [تایید نهایی درخواست‌دهنده] آخرین حرف را خودِ درخواست‌دهنده می‌زند */}
       <Field label="تایید نهایی توسط درخواست‌دهنده"
@@ -366,7 +384,11 @@ function TemplateModal({ tpl, onClose, onDone }) {
           مقدارِ مرخصی خودکار از ماندهٔ درخواست‌دهنده کم شود. */}
       <Field label="این فرآیند، «درخواست مرخصی» است"
         hint="با فعال‌کردن، پس از تایید نهاییِ درخواست، مقدار مرخصی محاسبه و از ماندهٔ درخواست‌دهنده کم می‌شود (صفحهٔ «مرخصی»).">
-        <Segmented value={leaveOn ? 1 : 0} onChange={v => setLeaveOn(!!v)}
+        <Segmented value={leaveOn ? 1 : 0} onChange={v => {
+          setLeaveOn(!!v);
+          // مرخصی معمولاً بعد از وقوع ثبت می‌شود — اگر سقفی تعیین نشده، دو هفته پیشنهاد می‌دهیم
+          if (v && !Number(pastDays)) setPastDays(14);
+        }}
           options={[
             { value: 1, label: 'بله', tone: 'primary', hint: 'از ماندهٔ مرخصی کسر می‌شود' },
             { value: 0, label: 'خیر' },

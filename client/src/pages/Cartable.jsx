@@ -145,17 +145,59 @@ export default function Cartable() {
 export const toFileIds = toIds;
 export const toImageIds = toIds; // نام قبلی — برای سازگاری
 
+// فرآیندها را بر اساس واحدِ مرتبطشان دسته‌بندی می‌کند.
+// یک فرآیند می‌تواند به چند واحد مربوط باشد و در هر گروه دیده می‌شود؛
+// فرآیندهایی که واحد مشخصی ندارند در گروه «عمومی» می‌آیند.
+const GENERAL = '__general__';
+function groupTemplates(templates, departments) {
+  const groups = new Map(); // key → { key, name, items[] }
+  const put = (key, name, tpl) => {
+    if (!groups.has(key)) groups.set(key, { key, name, items: [] });
+    groups.get(key).items.push(tpl);
+  };
+  for (const t of templates) {
+    let scope = [];
+    try { scope = JSON.parse(t.scope_dept_ids || '[]'); } catch {}
+    scope = (Array.isArray(scope) ? scope : []).map(Number).filter(Boolean);
+    if (!scope.length) { put(GENERAL, 'عمومی (همهٔ واحدها)', t); continue; }
+    for (const id of scope) {
+      const d = departments.find(x => x.id === id);
+      put(String(id), d ? d.name : `واحد ${id}`, t);
+    }
+  }
+  // «عمومی» همیشه آخر بیاید تا واحدها جلوتر دیده شوند
+  return [...groups.values()].sort((a, b) =>
+    (a.key === GENERAL ? 1 : 0) - (b.key === GENERAL ? 1 : 0) || a.name.localeCompare(b.name, 'fa'));
+}
+
 function NewRequestModal({ templates, onClose, onDone }) {
-  const { toast, settings } = useStore();
+  const { toast, settings, user, departments } = useStore();
   const attOff = settings?.attachments_enabled === '0'; // [پیوست‌ها] کلید سراسری
-  const [tplId, setTplId] = useState(templates[0]?.id || '');
+  const groups = groupTemplates(templates, departments);
+  // پیش‌فرض روی واحدِ خودِ کاربر — بیشترِ درخواست‌ها همان‌جاست
+  const [groupKey, setGroupKey] = useState(() => {
+    const mine = groups.find(g => g.key === String(user?.department_id));
+    return (mine || groups[0])?.key || GENERAL;
+  });
+  const group = groups.find(g => g.key === groupKey) || groups[0];
+  const groupItems = group?.items || [];
+  const [tplId, setTplId] = useState(groupItems[0]?.id || '');
   const [title, setTitle] = useState('');
   const [data, setData] = useState({});
   const [busy, setBusy] = useState(false);
   const [previewSteps, setPreviewSteps] = useState([]);
-  const tpl = templates.find(t => t.id === Number(tplId));
+  const tpl = groupItems.find(t => t.id === Number(tplId));
   let schema = [];
   try { schema = JSON.parse(tpl?.form_schema || '[]'); } catch {}
+  const pastDays = Number(tpl?.past_days_limit) || 0;
+
+  // با عوض‌شدن واحد، اولین فرآیندِ همان واحد انتخاب می‌شود
+  const pickGroup = (key) => {
+    setGroupKey(key);
+    const first = (groups.find(g => g.key === key)?.items || [])[0];
+    setTplId(first?.id || '');
+    setData({});
+  };
 
   // زنجیره تایید را با نام دقیق افراد برای این درخواست‌دهنده نمایش بده
   useEffect(() => {
@@ -168,7 +210,7 @@ function NewRequestModal({ templates, onClose, onDone }) {
   }, [tplId]);
 
   const submit = async () => {
-    const err = validateRequestForm(schema, data, { attachmentsOff: attOff });
+    const err = validateRequestForm(schema, data, { attachmentsOff: attOff, pastDays });
     if (err) return toast(err, 'error');
     setBusy(true);
     try {
@@ -184,11 +226,25 @@ function NewRequestModal({ templates, onClose, onDone }) {
         <button className="btn btn-ghost" onClick={onClose}>انصراف</button>
         <button className="btn btn-primary" disabled={!tpl || !title.trim() || busy} onClick={submit}>ثبت درخواست</button>
       </>}>
-      <Field label="نوع فرآیند">
-        <select className="input" value={tplId} onChange={e => { setTplId(e.target.value); setData({}); }}>
-          {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-        </select>
-      </Field>
+      {/* اول واحد، بعد فرآیندهای همان واحد — فهرست بلندِ همهٔ فرآیندها گیج‌کننده بود */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.6fr', gap: 12 }}>
+        <Field label="واحد / بخش">
+          <select className="input" value={groupKey} onChange={e => pickGroup(e.target.value)}>
+            {groups.map(g => (
+              <option key={g.key} value={g.key}>
+                {g.name} ({g.items.length.toLocaleString('fa-IR')})
+              </option>
+            ))}
+            {!groups.length && <option value="">فرآیندی در دسترس نیست</option>}
+          </select>
+        </Field>
+        <Field label="نوع فرآیند">
+          <select className="input" value={tplId} onChange={e => { setTplId(e.target.value); setData({}); }}>
+            {groupItems.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            {!groupItems.length && <option value="">فرآیندی برای این واحد تعریف نشده</option>}
+          </select>
+        </Field>
+      </div>
       {tpl?.description && <p style={{ fontSize: 12.8, color: 'var(--text-2)', margin: '-6px 0 14px' }}>{tpl.description}</p>}
       {/* [مورد ۲] فایل‌های راهنمای فرآیند (عکس یا هر سند دیگر) */}
       {(() => { let atts = []; try { atts = JSON.parse(tpl?.attachments || '[]'); } catch {} return atts.length ? (
@@ -220,7 +276,12 @@ function NewRequestModal({ templates, onClose, onDone }) {
         <input className="input" value={title} onChange={e => setTitle(e.target.value)}
           placeholder={tpl?.title_placeholder || 'مثلاً: خرید ۵۰ کیلوگرم مس'} />
       </Field>
-      <RequestFormFields schema={schema} data={data} onChange={setData} />
+      {pastDays > 0 && schema.some(f => f.type === 'date') && (
+        <p style={{ fontSize: 12.3, color: 'var(--text-2)', margin: '-4px 0 12px' }}>
+          برای این فرآیند می‌توانید تا {pastDays.toLocaleString('fa-IR')} روزِ گذشته هم تاریخ انتخاب کنید.
+        </p>
+      )}
+      <RequestFormFields schema={schema} data={data} onChange={setData} pastDays={pastDays} />
     </Modal>
   );
 }

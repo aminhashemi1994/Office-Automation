@@ -4,8 +4,9 @@
 //  به‌عنوان «فرآیند مرخصی» علامت خورده باشد، پس از تایید نهایی خودکار کسر می‌کند.
 // ============================================================================
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
-  CalendarDays, Users as UsersIcon, Settings2, Minus, Trash2, ArrowRight, Search,
+  CalendarDays, Users as UsersIcon, Settings2, Minus, Trash2, ArrowRight, Search, Plus, Clock,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
@@ -15,6 +16,12 @@ import Gauge, { MiniBar } from '../components/Gauge.jsx';
 
 const TYPE_LABEL = { entitled: 'استحقاقی', unpaid: 'بدون حقوق', sick: 'استعلاجی' };
 const TYPE_BADGE = { entitled: 'badge-primary', unpaid: 'badge-gray', sick: 'badge-amber' };
+
+// وضعیت درخواست‌های مرخصی — همان وضعیت‌های کارتابل
+const REQ_BADGE = {
+  in_progress: 'badge-primary', awaiting_requester: 'badge-sky', returned: 'badge-amber',
+  approved: 'badge-green', rejected: 'badge-red', cancelled: 'badge-gray',
+};
 
 // ساعت را به شکل «X روز و Y ساعت» نشان می‌دهد
 function hoursLabel(hours, workday) {
@@ -39,10 +46,12 @@ export default function Leaves() {
   const [config, setConfig] = useState(null);
   const [search, setSearch] = useState('');
   const [deptF, setDeptF] = useState('');
+  const [myReqs, setMyReqs] = useState(null); // وضعیت درخواست‌های مرخصی خودم
 
   const load = async () => {
     try { setData(await api('/leaves/balances')); }
     catch (e) { toast(e.message, 'error'); }
+    try { setMyReqs(await api('/leaves/requests')); } catch {}
   };
   useEffect(() => { load(); }, []);
   if (!data) return <div className="content"><div className="empty">در حال بارگذاری…</div></div>;
@@ -141,6 +150,70 @@ export default function Leaves() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* وضعیت درخواست‌های مرخصی — کاربر باید بداند درخواستش کجای مسیر است */}
+      {myReqs && (
+        <div className="card card-pad" style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+            <b>
+              وضعیت درخواست‌های مرخصی من
+              {myReqs.open_count > 0 && (
+                <span className="badge badge-primary" style={{ marginRight: 8 }}>
+                  {fa(myReqs.open_count)} در جریان
+                </span>
+              )}
+            </b>
+            {myReqs.templates.length > 0 && (
+              <Link to="/cartable" className="btn btn-primary btn-sm">
+                <Plus size={14} /> درخواست مرخصی جدید
+              </Link>
+            )}
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 10px', lineHeight: 1.9 }}>
+            مرخصی فقط پس از <b>تایید نهایی</b> از مانده کم می‌شود؛ درخواست‌های در جریان هنوز روی
+            ماندهٔ بالا اثری ندارند.
+            {myReqs.templates.length === 0 && ' (هنوز هیچ فرآیندی به‌عنوان «فرآیند مرخصی» تعریف نشده است.)'}
+          </p>
+          {myReqs.requests.length === 0 ? (
+            <div style={{ fontSize: 12.8, color: 'var(--text-3)' }}>هنوز درخواست مرخصی ثبت نکرده‌اید</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr><th>عنوان</th><th>فرآیند</th><th>بازه</th><th>مقدار</th><th>نوع</th><th>وضعیت</th><th>ثبت</th></tr>
+              </thead>
+              <tbody>
+                {myReqs.requests.map(rq => (
+                  <tr key={rq.id}>
+                    <td>
+                      <Link to={`/cartable/${rq.id}`} style={{ fontWeight: 600, color: 'var(--primary)' }}>{rq.title}</Link>
+                    </td>
+                    <td style={{ fontSize: 12.3 }}>{rq.template_name}</td>
+                    <td style={{ fontSize: 12.3 }}>
+                      {rq.from_date || rq.to_date ? `${rq.from_date || '…'} تا ${rq.to_date || '…'}` : '—'}
+                    </td>
+                    <td style={{ fontSize: 12.5, fontWeight: 600 }}>
+                      {rq.amount_label || (rq.hours !== null ? hoursLabel(rq.hours, wd) : '—')}
+                    </td>
+                    <td style={{ fontSize: 12.3 }}>
+                      {rq.leave_type ? (
+                        <span className={`badge ${TYPE_BADGE[rq.leave_type] || 'badge-gray'}`}>{TYPE_LABEL[rq.leave_type]}</span>
+                      ) : '—'}
+                    </td>
+                    <td>
+                      <span className={`badge ${REQ_BADGE[rq.status] || 'badge-gray'}`}>{rq.status_label}</span>
+                      {rq.status === 'approved' && !rq.deducted && (
+                        <span className="badge badge-amber" style={{ marginRight: 5 }}
+                          title="تایید شده ولی مقدارِ مرخصی از فرم قابل تشخیص نبود">از مانده کم نشد</span>
+                      )}
+                    </td>
+                    <td style={{ fontSize: 12.3, color: 'var(--text-3)' }}>{fmtDateTime(rq.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
 

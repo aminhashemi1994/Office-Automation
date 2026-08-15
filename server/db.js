@@ -1,7 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import bcrypt from 'bcryptjs';
 import fs from 'fs';
-import { DB_FILE, UPLOADS_DIR, SHARED_FILES_DIR, RECORDINGS_DIR, AVATARS_DIR, BRANDING_DIR, SIGNATURES_DIR, SOUNDS_DIR } from './config.js';
+import path from 'path';
+import { config, DB_FILE, UPLOADS_DIR, SHARED_FILES_DIR, RECORDINGS_DIR, AVATARS_DIR, BRANDING_DIR, SIGNATURES_DIR, SOUNDS_DIR, BACKUPS_DIR } from './config.js';
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 fs.mkdirSync(SHARED_FILES_DIR, { recursive: true });
@@ -14,6 +15,33 @@ fs.mkdirSync(SOUNDS_DIR, { recursive: true });
 const db = new DatabaseSync(DB_FILE);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
+
+// ============================================================================
+//  پشتیبانِ پیش از مایگریشن
+//  هر بار که نسخهٔ ساختار دیتابیس (SCHEMA_TAG) عوض شود — یعنی دقیقاً وقتی کدِ تازه
+//  می‌خواهد ساختار را تغییر دهد — پیش از هر تغییری یک نسخهٔ کامل و سالم گرفته می‌شود.
+//  اگر مایگریشن به هر دلیلی خراب شود، فایلِ data/backups/*-premigrate.db همان دادهٔ
+//  قبلی است و کافی است جای فایل دیتابیس گذاشته شود.
+//  روی دیتابیسِ تازه (بدون جدول) کاری نمی‌کند و در اجراهای بعدی هم تکرار نمی‌شود.
+// ============================================================================
+const SCHEMA_TAG = '2026-08-15-crm-leave-pwreset-pastdays';
+try {
+  const has = (t) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t);
+  if (has('app_settings')) {
+    const tag = db.prepare("SELECT value FROM app_settings WHERE key='schema_tag'").get()?.value;
+    if (tag !== SCHEMA_TAG) {
+      fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+      const d = new Date(), p = (n) => String(n).padStart(2, '0');
+      const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+      const dest = path.join(BACKUPS_DIR, `${config.dbName}-${stamp}-premigrate.db`);
+      db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+      console.log(`💾 پشتیبانِ پیش از به‌روزرسانی ساختار: ${path.basename(dest)} — ${(fs.statSync(dest).size / 1024).toFixed(0)}KB`);
+    }
+  }
+} catch (e) {
+  // پشتیبان‌گیری نباید بالا آمدن سرور را متوقف کند، اما باید دیده شود
+  console.error('⚠️ پشتیبانِ پیش از مایگریشن گرفته نشد:', e.message);
+}
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS departments (
@@ -510,7 +538,8 @@ CREATE TABLE IF NOT EXISTS crm_stage_reports (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_crm_sr_deal ON crm_stage_reports(deal_id, id);
-CREATE INDEX IF NOT EXISTS idx_crm_sr_tender ON crm_stage_reports(tender_id, id);
+-- ایندکسِ tender_id عمداً اینجا نیست: روی دیتابیس‌های قدیمی این ستون هنوز وجود ندارد
+-- و ساختِ ایندکس پیش از مایگریشن، بالا آمدن سرور را متوقف می‌کند. بعد از ALTER ساخته می‌شود.
 CREATE INDEX IF NOT EXISTS idx_crm_sr_user ON crm_stage_reports(user_id, created_at);
 
 -- ========================================================================
@@ -863,7 +892,13 @@ try {
   const info = db.prepare('PRAGMA table_info(crm_stage_reports)').all();
   const dealCol = info.find(c => c.name === 'deal_id');
   if (dealCol && dealCol.notnull) {
+    const before = db.prepare('SELECT COUNT(*) c FROM crm_stage_reports').get().c;
     db.exec('PRAGMA foreign_keys = OFF');
+    // کل بازسازی در یک تراکنش: یا همه انجام می‌شود یا هیچ‌کدام.
+    // بدون این، اگر کپی وسطِ کار خطا بدهد جدولِ قدیمی حذف‌شده باقی می‌ماند.
+    // اگر ستون tender_id قبلاً اضافه شده و مقدار گرفته، همان مقدار منتقل می‌شود نه NULL
+    const tenderExpr = info.some(c => c.name === 'tender_id') ? 'tender_id' : 'NULL';
+    db.exec('BEGIN IMMEDIATE');
     db.exec(`
       CREATE TABLE crm_stage_reports_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -879,17 +914,30 @@ try {
       INSERT INTO crm_stage_reports_new
         (id, deal_id, tender_id, customer_id, from_stage, stage, summary, went_well, went_wrong,
          blockers, next_action, confidence, user_id, created_at)
-      SELECT id, deal_id, NULL, customer_id, from_stage, stage, summary, went_well, went_wrong,
+      SELECT id, deal_id, ${tenderExpr}, customer_id, from_stage, stage, summary, went_well, went_wrong,
              blockers, next_action, confidence, user_id, created_at FROM crm_stage_reports;
+    `);
+    // قبل از حذفِ جدولِ قدیمی مطمئن شو همهٔ ردیف‌ها منتقل شده‌اند
+    const after = db.prepare('SELECT COUNT(*) c FROM crm_stage_reports_new').get().c;
+    if (after !== before) throw new Error(`انتقال ناقص: ${before} ردیف بود، ${after} ردیف منتقل شد`);
+    db.exec(`
       DROP TABLE crm_stage_reports;
       ALTER TABLE crm_stage_reports_new RENAME TO crm_stage_reports;
       CREATE INDEX IF NOT EXISTS idx_crm_sr_deal ON crm_stage_reports(deal_id, id);
       CREATE INDEX IF NOT EXISTS idx_crm_sr_tender ON crm_stage_reports(tender_id, id);
       CREATE INDEX IF NOT EXISTS idx_crm_sr_user ON crm_stage_reports(user_id, created_at);
     `);
+    db.exec('COMMIT');
     db.exec('PRAGMA foreign_keys = ON');
+    console.log(`✅ crm_stage_reports بازسازی شد — ${before} ردیف حفظ شد`);
   }
-} catch (e) { console.error('⚠️ بازسازی crm_stage_reports:', e.message); }
+} catch (e) {
+  try { db.exec('ROLLBACK'); } catch {}
+  try { db.exec('PRAGMA foreign_keys = ON'); } catch {}
+  console.error('⚠️ بازسازی crm_stage_reports انجام نشد (داده دست‌نخورده ماند):', e.message);
+}
+// حالا که ستون tender_id قطعاً وجود دارد، ایندکسش ساخته می‌شود
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_crm_sr_tender ON crm_stage_reports(tender_id, id)'); } catch {}
 // [محصولات] موجودی، مشخصات فنی و اطلاعات تکمیلی
 try { db.exec('ALTER TABLE crm_products ADD COLUMN stock REAL DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE crm_products ADD COLUMN reorder_point REAL DEFAULT 0'); } catch {}
@@ -906,6 +954,36 @@ try { db.exec('ALTER TABLE crm_deals ADD COLUMN tender_id INTEGER REFERENCES crm
 try { db.exec('ALTER TABLE workflow_templates ADD COLUMN leave_enabled INTEGER DEFAULT 0'); } catch {}
 // نگاشت: {type_field, day_field, hour_field, from_field, to_field, range_field, default_type}
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN leave_map TEXT DEFAULT '{}'"); } catch {}
+
+// ============================================================================
+//  فراموشی رمز عبور
+//  دو مسیر دارد و هر دو همیشه فعال‌اند:
+//   ۱. بازنشانی توسط مدیر سامانه — همیشه کار می‌کند (سامانه ممکن است آفلاین باشد)
+//   ۲. کدِ یک‌بارمصرفِ پیامکی — فقط اگر درگاه پیامک تنظیم و شمارهٔ موبایل کاربر ثبت باشد
+//  کد به‌صورت هش ذخیره می‌شود و عمر کوتاهی دارد.
+// ============================================================================
+db.exec(`
+CREATE TABLE IF NOT EXISTS password_resets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  username_tried TEXT DEFAULT '',     -- آنچه کاربر تایپ کرده (حتی اگر وجود نداشته باشد)
+  method TEXT DEFAULT 'admin',        -- admin | sms
+  code_hash TEXT DEFAULT '',          -- هشِ کد یک‌بارمصرف (فقط برای مسیر پیامکی)
+  code_expires_at TEXT,
+  attempts INTEGER DEFAULT 0,         -- تلاش‌های ناموفقِ وارد کردن کد
+  status TEXT DEFAULT 'pending',      -- pending | done | rejected | expired
+  handled_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  handled_at TEXT,
+  ip TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pw_resets ON password_resets(status, id);
+CREATE INDEX IF NOT EXISTS idx_pw_resets_user ON password_resets(user_id, created_at);
+`);
+
+// [تاریخ گذشته] تا چند روزِ گذشته می‌توان برای این فرآیند درخواست ثبت کرد؟
+// ۰ = فقط از امروز به بعد (رفتار قبلی، پیش‌فرض همهٔ فرآیندهای موجود)
+try { db.exec('ALTER TABLE workflow_templates ADD COLUMN past_days_limit INTEGER DEFAULT 0'); } catch {}
 
 // ---------- seed ----------
 const userCount = db.prepare('SELECT COUNT(*) c FROM users').get().c;
@@ -952,20 +1030,29 @@ if (userCount === 0) {
 // عمداً بعد از بلوک seed اجرا می‌شود تا روی دیتابیسِ تازه هم واحدها موجود باشند.
 // بعد از این، هر تغییری که مدیر سامانه در تنظیمات بدهد محترم است و بازنویسی نمی‌شود.
 {
+  // نسخهٔ '1' روی بعضی دیتابیس‌ها زودتر از ساختِ واحدها اجرا شده و مقدار خالی گذاشته بود؛
+  // نسخهٔ '2' یک‌بار دیگر و فقط برای پر کردنِ مقدارِ خالی اجرا می‌شود.
   const seeded = db.prepare("SELECT value FROM app_settings WHERE key = 'crm_defaults_seeded'").get()?.value;
-  if (seeded !== '1') {
+  if (seeded !== '2') {
     const ids = db.prepare(`SELECT id FROM departments
       WHERE is_management = 1 OR name IN ('بازرگانی', 'مدیریت', 'فروش', 'بازرگانی و فروش')`)
       .all().map(r => r.id);
     if (ids.length) {
+      // فقط وقتی مقدار فعلی خالی است پر می‌شود؛ اگر مدیر سامانه قبلاً واحدها را
+      // انتخاب کرده باشد (حتی روی محیط تست) انتخابش دست‌نخورده می‌ماند.
       const set = db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        WHERE app_settings.value IS NULL OR trim(app_settings.value) IN ('', '[]')`);
       set.run('crm_dept_ids', JSON.stringify(ids));
       set.run('crm_full_dept_ids', JSON.stringify(ids));
       // فقط وقتی واقعاً واحدی پیدا شد علامت بزن — وگرنه اجرای بعدی دوباره تلاش می‌کند
-      db.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)').run('crm_defaults_seeded', '1');
+      db.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)').run('crm_defaults_seeded', '2');
     }
   }
 }
+
+// ثبت نسخهٔ ساختار — از این پس تا تغییر بعدیِ ساختار، پشتیبانِ پیش از مایگریشن تکرار نمی‌شود
+db.prepare(`INSERT INTO app_settings (key, value) VALUES ('schema_tag', ?)
+  ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(SCHEMA_TAG);
 
 export default db;

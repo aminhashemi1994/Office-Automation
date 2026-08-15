@@ -6,7 +6,7 @@ import { Field } from './common.jsx';
 import { AttachmentPicker, toFileIds } from './Attachments.jsx';
 import { JalaliDatePicker } from './JalaliDatePicker.jsx';
 import { TimePicker } from './TimePicker.jsx';
-import { todayJalali, formatJalali } from '../jalali.js';
+import { todayJalali, formatJalali, toGregorian, toJalaali } from '../jalali.js';
 
 // [مورد ۲] فیلد پیوستِ فایل در فرم درخواست — چند فایل؛ مقدار، آرایه‌ای از id فایل‌هاست.
 // نوع فیلد 'image' فقط عکس می‌پذیرد و نوع 'file' هر سندی (PDF/Word/Excel/عکس/…).
@@ -35,6 +35,17 @@ function FormFileField({ field, value, onChange }) {
 
 // بافت تاریخ برای بررسی «زمان گذشته»: اگر فرم یک فیلد تاریخ دارد از همان استفاده می‌کنیم،
 // در غیر این صورت «امروز» فرض می‌شود. اگر تاریخِ انتخابی امروز باشد، ساعت نباید از اکنون عقب‌تر باشد.
+// تاریخِ شمسیِ «امروز منهای N روز» به‌شکل رشته‌ای که فرم ذخیره می‌کند
+export function pastFloor(pastDays) {
+  const tj = todayJalali();
+  if (!pastDays) return formatJalali(tj.jy, tj.jm, tj.jd);
+  const g = toGregorian(tj.jy, tj.jm, tj.jd);
+  const dt = new Date(g.gy, g.gm - 1, g.gd);
+  dt.setDate(dt.getDate() - Number(pastDays));
+  const j = toJalaali(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+  return formatJalali(j.jy, j.jm, j.jd);
+}
+
 export function minTimeFor(schema, data) {
   const now = new Date();
   const nowHHMM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -53,11 +64,18 @@ export function minTimeFor(schema, data) {
 // اعتبارسنجی مقادیر فرم — پیام خطا برمی‌گرداند یا null اگر همه‌چیز درست است.
 // در حالت ویرایش (allowPast) محدودیتِ «زمان گذشته» اعمال نمی‌شود، چون ممکن است
 // درخواست مدت‌ها قبل ثبت شده باشد و اصلاحِ یک فیلد دیگر نباید به‌خاطر آن قفل شود.
-export function validateRequestForm(schema, data, { attachmentsOff = false, allowPast = false } = {}) {
+export function validateRequestForm(schema, data, { attachmentsOff = false, allowPast = false, pastDays = 0 } = {}) {
   const { timeMin, nowHHMM } = minTimeFor(schema, data);
   const min = allowPast ? undefined : timeMin;
+  const floor = allowPast ? null : pastFloor(pastDays);
   for (const f of schema || []) {
     const v = data?.[f.key];
+    // تاریخ نباید از سقفِ مجازِ گذشته عقب‌تر باشد (مقایسهٔ رشته‌ای درست است چون قالب ثابت است)
+    if (floor && f.type === 'date' && v && String(v) < floor) {
+      return pastDays > 0
+        ? `«${f.label}» نمی‌تواند از ${floor} عقب‌تر باشد (حداکثر ${pastDays.toLocaleString('fa-IR')} روز گذشته)`
+        : `«${f.label}» نمی‌تواند تاریخ گذشته باشد`;
+    }
     if (f.required) {
       const missing = f.type === 'time_range'
         ? (!v || !v.start || !v.end)
@@ -77,10 +95,13 @@ export function validateRequestForm(schema, data, { attachmentsOff = false, allo
   return null;
 }
 
-export default function RequestFormFields({ schema = [], data = {}, onChange, allowPast = false }) {
+export default function RequestFormFields({ schema = [], data = {}, onChange, allowPast = false, pastDays = 0 }) {
   const set = (key, value) => onChange({ ...data, [key]: value });
   const { timeMin: rawMin } = minTimeFor(schema, data);
-  const timeMin = allowPast ? undefined : rawMin;
+  // اگر تاریخِ انتخاب‌شده مربوط به گذشته است، محدودیتِ «ساعت از اکنون عقب‌تر نباشد» بی‌معناست
+  const anyPastDate = (schema || []).some(f => f.type === 'date' && data?.[f.key]
+    && String(data[f.key]) < pastFloor(0));
+  const timeMin = (allowPast || anyPastDate) ? undefined : rawMin;
 
   return schema.map(f => (
     <Field key={f.key} label={f.label + (f.required ? ' *' : '')}>
@@ -93,7 +114,8 @@ export default function RequestFormFields({ schema = [], data = {}, onChange, al
           {(f.options || []).map(o => <option key={o} value={o}>{o}</option>)}
         </select>
       ) : f.type === 'date' ? (
-        <JalaliDatePicker value={data[f.key] || ''} placeholder={f.placeholder} disablePast={!allowPast}
+        <JalaliDatePicker value={data[f.key] || ''} placeholder={f.placeholder}
+          disablePast={!allowPast} pastDays={pastDays}
           onChange={v => set(f.key, v)} />
       ) : f.type === 'time' ? (
         <TimePicker value={data[f.key] || ''} minTime={timeMin} onChange={v => set(f.key, v)} />

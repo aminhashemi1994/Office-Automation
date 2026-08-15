@@ -205,6 +205,69 @@ r.delete('/ledger/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- وضعیت درخواست‌های مرخصی ----------
+// ماندهٔ مرخصی فقط درخواست‌های «تاییدشده» را نشان می‌دهد؛ کاربر باید بتواند
+// درخواست‌های در جریان و ردشده را هم ببیند تا بداند کارش کجاست.
+const LEAVE_STATUS_FA = {
+  in_progress: 'در جریان تایید',
+  awaiting_requester: 'در انتظار تایید نهایی شما',
+  returned: 'برگشت برای اصلاح',
+  approved: 'تایید شد',
+  rejected: 'رد شد',
+  cancelled: 'لغو شد',
+};
+
+r.get('/requests', (req, res) => {
+  const uid = Number(req.query.user_id) || req.user.id;
+  if (uid !== req.user.id && !canSeeUserBalance(req.user, uid)) {
+    return res.status(403).json({ error: 'دسترسی غیرمجاز' });
+  }
+  const rows = db.prepare(`
+    SELECT r.id, r.title, r.status, r.current_step, r.created_at, r.closed_at, r.form_data,
+           t.name AS template_name, t.leave_map,
+           l.hours, l.leave_type, l.amount_label, l.from_date, l.to_date
+    FROM workflow_requests r
+    JOIN workflow_templates t ON t.id = r.template_id
+    LEFT JOIN leave_ledger l ON l.request_id = r.id
+    WHERE t.leave_enabled = 1 AND r.requester_id = ?
+    ORDER BY r.id DESC LIMIT 100`).all(uid);
+
+  const steps = db.prepare('SELECT template_id, step_order, title FROM workflow_steps');
+  const requests = rows.map(r_ => {
+    let map = {}; let form = {};
+    try { map = JSON.parse(r_.leave_map || '{}'); } catch {}
+    try { form = JSON.parse(r_.form_data || '{}'); } catch {}
+    // اگر هنوز تایید نشده، مقدار از خودِ فرم خوانده می‌شود تا کاربر ببیند چقدر درخواست داده
+    const fromDate = r_.from_date || (map.from_field ? String(form[map.from_field] ?? '') : '');
+    const toDate = r_.to_date || (map.to_field ? String(form[map.to_field] ?? '') : '');
+    return {
+      id: r_.id,
+      title: r_.title,
+      template_name: r_.template_name,
+      status: r_.status,
+      status_label: LEAVE_STATUS_FA[r_.status] || r_.status,
+      created_at: r_.created_at,
+      closed_at: r_.closed_at,
+      from_date: fromDate,
+      to_date: toDate,
+      // ساعت‌ها فقط برای درخواست‌های تاییدشده قطعی است
+      hours: r_.hours === null || r_.hours === undefined ? null : Math.abs(Number(r_.hours)),
+      leave_type: r_.leave_type || null,
+      amount_label: r_.amount_label || '',
+      deducted: r_.hours !== null && r_.hours !== undefined,
+    };
+  });
+  const open = requests.filter(x => ['in_progress', 'awaiting_requester', 'returned'].includes(x.status));
+  res.json({
+    requests,
+    open_count: open.length,
+    types: LEAVE_TYPES,
+    statuses: LEAVE_STATUS_FA,
+    // فرآیندهای مرخصی برای دکمهٔ «درخواست مرخصی جدید»
+    templates: db.prepare('SELECT id, name FROM workflow_templates WHERE leave_enabled = 1 AND is_active = 1').all(),
+  });
+});
+
 // ---------- تنظیمات مرخصی ----------
 r.get('/settings', (req, res) => {
   res.json({

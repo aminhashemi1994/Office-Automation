@@ -3,13 +3,16 @@ import { Calendar as CalIcon, ChevronRight, ChevronLeft, X } from 'lucide-react'
 import {
   J_MONTHS, J_WEEKDAYS, faDigits, todayJalali, jalaaliMonthLength,
   jalaliWeekIndex, formatJalali, parseJalali, displayJalali,
+  toGregorian, toJalaali,
 } from '../jalali.js';
 
 const POPUP_W = 268;
 const POPUP_H = 336;
 
 // انتخابگر تاریخ شمسی — مقدار به‌صورت "1403/04/27" برمی‌گردد (بدون تاریخ میلادی)
-export function JalaliDatePicker({ value, onChange, placeholder, disablePast = false }) {
+// pastDays: تا چند روزِ گذشته قابل انتخاب است (فقط وقتی disablePast روشن باشد).
+// ۰ = فقط از امروز به بعد. مثلاً ۱۴ یعنی تا دو هفتهٔ قبل هم می‌شود انتخاب کرد.
+export function JalaliDatePicker({ value, onChange, placeholder, disablePast = false, pastDays = 0 }) {
   const [open, setOpen] = useState(false);
   const parsed = parseJalali(value);
   const t = todayJalali();
@@ -70,7 +73,16 @@ export function JalaliDatePicker({ value, onChange, placeholder, disablePast = f
 
   const tupleOf = (y, m, d) => y * 10000 + m * 100 + d;
   const todayTuple = tupleOf(t.jy, t.jm, t.jd);
-  const isPast = (d) => disablePast && tupleOf(view.y, view.m, d) < todayTuple;
+  // کفِ مجاز = امروز منهای pastDays روز (محاسبه از راه تاریخ میلادی تا طول ماه‌ها درست باشد)
+  const floorTuple = (() => {
+    if (!pastDays) return todayTuple;
+    const g = toGregorian(t.jy, t.jm, t.jd);
+    const dt = new Date(g.gy, g.gm - 1, g.gd);
+    dt.setDate(dt.getDate() - Number(pastDays));
+    const j = toJalaali(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+    return tupleOf(j.jy, j.jm, j.jd);
+  })();
+  const isPast = (d) => disablePast && tupleOf(view.y, view.m, d) < floorTuple;
   const pick = (d) => { if (isPast(d)) return; onChange(formatJalali(view.y, view.m, d)); setOpen(false); };
   const isSel = (d) => parsed && parsed.jy === view.y && parsed.jm === view.m && parsed.jd === d;
   const isToday = (d) => t.jy === view.y && t.jm === view.m && t.jd === d;

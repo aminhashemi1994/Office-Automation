@@ -357,6 +357,44 @@ function currentStepOf(request) {
     .get(request.template_id, request.current_step);
 }
 
+// ---------- [تاریخ گذشته] اعتبارسنجی سمتِ سرور ----------
+// تاریخِ شمسیِ "YYYY/MM/DD" را به عددِ قابل‌مقایسه تبدیل می‌کند (بدون نیاز به تقویم)
+function jalaliKey(str) {
+  const m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(String(str || '').trim());
+  return m ? Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]) : null;
+}
+
+// «امروز منهای N روز» به کلیدِ شمسی — با Intl حساب می‌شود تا تقویم دستی لازم نباشد
+function jalaliFloorKey(pastDays) {
+  const d = new Date();
+  d.setDate(d.getDate() - (Number(pastDays) || 0));
+  const parts = new Intl.DateTimeFormat('en-u-ca-persian-nu-latn', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(d);
+  const get = (t) => Number(String(parts.find(p => p.type === t)?.value || '').replace(/\D/g, ''));
+  return get('year') * 10000 + get('month') * 100 + get('day');
+}
+
+// اگر فرم فیلد تاریخ دارد، نباید از سقفِ مجازِ فرآیند عقب‌تر باشد.
+// (کلاینت هم بررسی می‌کند ولی سرور حرفِ آخر را می‌زند.)
+function checkPastDates(tpl, formData) {
+  let schema = [];
+  try { schema = JSON.parse(tpl.form_schema || '[]'); } catch {}
+  if (!Array.isArray(schema)) return null;
+  const limit = Number(tpl.past_days_limit) || 0;
+  const floor = jalaliFloorKey(limit);
+  for (const f of schema) {
+    if (f?.type !== 'date') continue;
+    const key = jalaliKey(formData?.[f.key]);
+    if (key !== null && key < floor) {
+      return limit > 0
+        ? `«${f.label}» بیش از ${limit.toLocaleString('fa-IR')} روز گذشته است و برای این فرآیند مجاز نیست`
+        : `«${f.label}» نمی‌تواند تاریخ گذشته باشد`;
+    }
+  }
+  return null;
+}
+
 // برچسبِ «مرحلهٔ فعلی» برای فهرست‌ها — شاملِ وضعیت‌های تایید نهایی و برگشت‌خورده
 function stepLabelOf(rq) {
   if (rq.status === 'in_progress') return currentStepOf(rq)?.title || null;
@@ -600,6 +638,9 @@ function templateExtras(body, prev = {}) {
     leave_map: body.leave_map !== undefined
       ? JSON.stringify(body.leave_map && typeof body.leave_map === 'object' ? body.leave_map : {})
       : (prev.leave_map ?? '{}'),
+    // [تاریخ گذشته] تا چند روزِ قبل می‌توان برای این فرآیند درخواست ثبت کرد (۰ = فقط از امروز)
+    past_days_limit: body.past_days_limit !== undefined
+      ? Math.max(0, Math.min(365, Number(body.past_days_limit) || 0)) : (prev.past_days_limit ?? 0),
   };
 }
 
@@ -612,13 +653,13 @@ r.post('/templates', (req, res) => {
   const result = db.prepare(`INSERT INTO workflow_templates
     (name, description, title_placeholder, form_schema, notify_requester_on_final, requester_signature, created_by,
      scope_dept_ids, attachments, total_deadline_hours, final_task_enabled, final_task_assignee_type, final_task_assignee_id, final_task_deadline_hours, final_task_notify,
-     allow_attachments, requester_final_approval, leave_enabled, leave_map)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     allow_attachments, requester_final_approval, leave_enabled, leave_map, past_days_limit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(name, description, title_placeholder, JSON.stringify(form_schema),
       notify_requester_on_final ? 1 : 0, requester_signature ? 1 : 0, req.user.id,
       ex.scope_dept_ids, ex.attachments, ex.total_deadline_hours, ex.final_task_enabled,
       ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify,
-      ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map);
+      ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map, ex.past_days_limit);
   insertSteps(result.lastInsertRowid, steps);
   res.json({ id: result.lastInsertRowid });
 });
@@ -637,7 +678,8 @@ r.put('/templates/:id', (req, res) => {
     is_active = ?, notify_requester_on_final = ?, requester_signature = ?,
     scope_dept_ids = ?, attachments = ?, total_deadline_hours = ?, final_task_enabled = ?,
     final_task_assignee_type = ?, final_task_assignee_id = ?, final_task_deadline_hours = ?, final_task_notify = ?,
-    allow_attachments = ?, requester_final_approval = ?, leave_enabled = ?, leave_map = ? WHERE id = ?`)
+    allow_attachments = ?, requester_final_approval = ?, leave_enabled = ?, leave_map = ?,
+    past_days_limit = ? WHERE id = ?`)
     .run(name ?? t.name, description ?? t.description,
       title_placeholder ?? t.title_placeholder,
       form_schema !== undefined ? JSON.stringify(form_schema) : t.form_schema,
@@ -646,7 +688,8 @@ r.put('/templates/:id', (req, res) => {
       requester_signature !== undefined ? (requester_signature ? 1 : 0) : t.requester_signature,
       ex.scope_dept_ids, ex.attachments, ex.total_deadline_hours, ex.final_task_enabled,
       ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify,
-      ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map, t.id);
+      ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map,
+      ex.past_days_limit, t.id);
   if (steps) {
     const hasOpen = db.prepare("SELECT 1 FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").get(t.id);
     if (hasOpen) return res.status(400).json({ error: 'تا زمانی که درخواست در جریان دارد، مراحل قابل تغییر نیست' });
@@ -685,6 +728,10 @@ r.post('/requests', (req, res) => {
     for (const f of Array.isArray(schema) ? schema : []) {
       if (f && FILE_FIELD_TYPES.has(f.type)) form_data[f.key] = normalizeFileIds(fieldFileIds(form_data?.[f.key]));
     }
+  }
+  {
+    const dateErr = checkPastDates(tpl, form_data);
+    if (dateErr) return res.status(400).json({ error: dateErr });
   }
   const steps = getSteps(tpl.id);
   if (!steps.length) return res.status(400).json({ error: 'این فرآیند مرحله‌ای ندارد' });
