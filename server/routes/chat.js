@@ -38,10 +38,16 @@ const recordUpload = multer({
 
 const r = Router();
 
+// Express ۴ خطای پرتاب‌شده در هندلرِ async را خودش نمی‌گیرد و نتیجه‌اش
+// unhandled rejection است — یعنی سقوطِ کلِ سرور. این پوشش، خطا را به
+// هندلرِ خطای سامانه می‌سپارد تا فقط همان درخواست ۵۰۰ بگیرد.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+
 // ---------- LiveKit: صدور توکن اتصال به اتاق تماس/کنفرانس ----------
 // کلاینت پیش از پیوستن به یک تماس، از اینجا توکن می‌گیرد و با آن به سرور LiveKit وصل می‌شود.
 // احراز هویت از قبل توسط authMiddleware انجام شده (req.user موجود است).
-r.post('/livekit-token', async (req, res) => {
+r.post('/livekit-token', wrap(async (req, res) => {
   const room = String(req.body?.room || '').trim();
   if (!room) return res.status(400).json({ error: 'اتاق مشخص نشده است' });
   const u = req.user;
@@ -61,7 +67,7 @@ r.post('/livekit-token', async (req, res) => {
   });
   const token = await at.toJwt();
   res.json({ url: config.livekit.url, token, identity: `user-${u.id}` });
-});
+}));
 
 function isMember(convId, userId) {
   return !!db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?').get(convId, userId);

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Building2, Image, Trash2, Save, Printer, DatabaseBackup, Download, Plus, ShieldCheck, Paperclip, Handshake, Send } from 'lucide-react';
+import { Building2, Image, Trash2, Save, Printer, DatabaseBackup, Download, Plus, ShieldCheck, Paperclip, Handshake, Send, Bot, FolderKanban, Loader2 } from 'lucide-react';
 import { api, getToken } from '../api.js';
 import { useStore } from '../store.jsx';
 import { Field, Segmented } from '../components/common.jsx';
@@ -214,12 +214,12 @@ function SmsCard() {
   const [form, setForm] = useState({
     sms_provider: settings.sms_provider || '',
     sms_api_url: settings.sms_api_url || '',
-    sms_api_key: settings.sms_api_key || '',
+    sms_api_key: '',
     sms_sender: settings.sms_sender || '',
   });
   const [busy, setBusy] = useState(false);
   const enabled = settings.sms_enabled === '1';
-  const configured = !!(settings.sms_api_url && settings.sms_api_key);
+  const configured = !!(settings.sms_api_url && settings.sms_api_key_set === '1');
 
   const save = async (patch) => {
     setBusy(true);
@@ -266,14 +266,156 @@ function SmsCard() {
             placeholder="https://api.kavenegar.com/v1"
             onChange={e => setForm(f => ({ ...f, sms_api_url: e.target.value }))} />
         </Field>
-        <Field label="کلید API">
+        <Field label="کلید API" hint={settings.sms_api_key_set === '1' ? 'کلید ذخیره شده است؛ خالی بگذارید تا تغییر نکند' : 'هنوز کلیدی ذخیره نشده است'}>
           <input className="input" type="password" style={{ direction: 'ltr', textAlign: 'left' }} value={form.sms_api_key}
+            placeholder={settings.sms_api_key_set === '1' ? '••••••••  (ذخیره‌شده)' : ''}
             onChange={e => setForm(f => ({ ...f, sms_api_key: e.target.value }))} />
         </Field>
       </div>
       <button className="btn btn-primary" disabled={busy} onClick={() => save(form)}>
         <Save size={16} /> ذخیره تنظیمات پیامک
       </button>
+    </div>
+  );
+}
+
+
+// [کارها] آیا انتخاب دسته‌بندی (پروژه) هنگام ساخت وظیفه اجباری باشد؟
+function TaskPolicyCard() {
+  const { settings, refreshSettings, toast } = useStore();
+  const [busy, setBusy] = useState(false);
+  const on = settings.tasks_require_project === '1';
+
+  const change = async (v) => {
+    setBusy(true);
+    try {
+      await api('/settings', { method: 'PUT', body: { tasks_require_project: v ? '1' : '0' } });
+      await refreshSettings();
+      toast(v ? 'از این پس انتخاب دسته‌بندی برای هر وظیفه الزامی است' : 'انتخاب دسته‌بندی اختیاری شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card card-pad" style={{ marginTop: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <FolderKanban size={17} />
+        <b>دسته‌بندی وظایف (پروژه‌ها)</b>
+        <span style={{ marginInlineStart: 'auto', opacity: busy ? .6 : 1 }}>
+          <Segmented size="sm" value={on ? 1 : 0} onChange={v => change(!!v)}
+            options={[
+              { value: 0, label: 'اختیاری', hint: 'وظیفه می‌تواند بی‌دسته بماند' },
+              { value: 1, label: 'الزامی', tone: 'primary', hint: 'هر وظیفه باید یک دسته داشته باشد' },
+            ]} />
+        </span>
+      </div>
+      <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.8, margin: 0 }}>
+        با الزامی‌کردن، هنگام ساخت هر وظیفه باید یک دسته‌بندی (پروژه) انتخاب شود؛ نتیجه‌اش این است که
+        فیلتر کردن کارها و پیگیریِ آن‌ها توسط مدیرِ هر بخش خیلی ساده‌تر می‌شود. وظایفِ قدیمیِ بی‌دسته
+        دست‌نخورده می‌مانند و همچنان در گروه «بدون دسته» دیده می‌شوند.
+      </p>
+    </div>
+  );
+}
+
+// [پشتیبانی هوشمند] اتصال به مدل زبانی — کلید و مدل قابل انتخاب است.
+// تا وقتی کلید وارد نشده، این بخش خاموش است و هیچ داده‌ای از سامانه بیرون نمی‌رود.
+function AiCard() {
+  const { settings, refreshSettings, toast } = useStore();
+  const [form, setForm] = useState({
+    ai_base_url: settings.ai_base_url || 'https://api.openai.com/v1',
+    ai_model: settings.ai_model || 'gpt-4o-mini',
+    ai_api_key: '',
+    ai_temperature: settings.ai_temperature || '0.3',
+  });
+  const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState(null);
+  const enabled = settings.ai_enabled === '1';
+  const hasKey = settings.ai_api_key_set === '1';
+
+  const save = async (patch) => {
+    setBusy(true);
+    try {
+      await api('/settings', { method: 'PUT', body: patch });
+      await refreshSettings();
+      setForm(f => ({ ...f, ai_api_key: '' }));
+      toast('تنظیمات پشتیبانی هوشمند ذخیره شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
+  const test = async () => {
+    setTesting(true); setResult(null);
+    try {
+      const r = await api('/ai/test', { method: 'POST', body: { model: form.ai_model } });
+      setResult({ ok: true, text: r.answer });
+    } catch (e) { setResult({ ok: false, text: e.message }); }
+    setTesting(false);
+  };
+
+  return (
+    <div className="card card-pad" style={{ marginTop: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <Bot size={17} />
+        <b>پشتیبانی هوشمند (هوش مصنوعی)</b>
+        <span style={{ marginInlineStart: 'auto', opacity: busy ? .6 : 1 }}>
+          <Segmented size="sm" value={enabled ? 1 : 0} onChange={v => save({ ai_enabled: v ? '1' : '0' })}
+            options={[
+              { value: 1, label: 'فعال', tone: 'primary', hint: 'دکمهٔ پشتیبانی در داشبورد ظاهر می‌شود' },
+              { value: 0, label: 'خاموش', hint: 'هیچ درخواستی به بیرون فرستاده نمی‌شود' },
+            ]} />
+        </span>
+      </div>
+      <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.8, margin: '0 0 12px' }}>
+        پشتیبانِ هوشمند به کاربران یاد می‌دهد با بخش‌های سامانه کار کنند. سرویس باید با قرارداد
+        OpenAI سازگار باشد (مسیر <code>/chat/completions</code>) — سرویس‌های واسط داخلی هم همین را دارند.
+        <b> توجه:</b> با فعال‌کردن این بخش، متنِ پرسش کاربر و یک خلاصهٔ کوتاه از وضعیت او
+        (نام، واحد، تعداد کارهای باز) به سرویسِ بیرونی فرستاده می‌شود؛ محتوای کارها، پیام‌ها و
+        پرونده‌ها هرگز فرستاده نمی‌شود.
+        {enabled && !hasKey && (
+          <span style={{ color: 'var(--red)', fontWeight: 700 }}> فعال است ولی هنوز کلید وارد نشده — پشتیبان کار نمی‌کند.</span>
+        )}
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label="آدرس سرویس (Base URL)" hint="مثلاً https://api.openai.com/v1">
+          <input className="input" style={{ direction: 'ltr', textAlign: 'left' }} value={form.ai_base_url}
+            onChange={e => setForm(f => ({ ...f, ai_base_url: e.target.value }))} />
+        </Field>
+        <Field label="نام مدل" hint="مثلاً gpt-4o-mini یا gpt-4o">
+          <input className="input" style={{ direction: 'ltr', textAlign: 'left' }} value={form.ai_model}
+            onChange={e => setForm(f => ({ ...f, ai_model: e.target.value }))} />
+        </Field>
+        <Field label="کلید سرویس (API token)"
+          hint={hasKey ? 'کلید ذخیره شده است؛ خالی بگذارید تا تغییر نکند' : 'هنوز کلیدی ذخیره نشده است'}>
+          <input className="input" type="password" style={{ direction: 'ltr', textAlign: 'left' }} value={form.ai_api_key}
+            placeholder={hasKey ? '••••••••  (ذخیره‌شده)' : 'sk-…'}
+            onChange={e => setForm(f => ({ ...f, ai_api_key: e.target.value }))} />
+        </Field>
+        <Field label="خلاقیت پاسخ (temperature)" hint="۰ = دقیق و تکرارپذیر · ۱ = آزادتر">
+          <input className="input" type="number" min="0" max="2" step="0.1" style={{ direction: 'ltr', textAlign: 'left' }}
+            value={form.ai_temperature} onChange={e => setForm(f => ({ ...f, ai_temperature: e.target.value }))} />
+        </Field>
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn btn-primary" disabled={busy} onClick={() => save(form)}>
+          <Save size={16} /> ذخیره تنظیمات هوش مصنوعی
+        </button>
+        <button className="btn btn-ghost" disabled={testing || !hasKey} onClick={test}>
+          {testing ? <Loader2 size={15} className="spin" /> : <ShieldCheck size={15} />} تست اتصال
+        </button>
+        {hasKey && (
+          <button className="btn btn-ghost" style={{ color: 'var(--red)' }} disabled={busy}
+            onClick={() => { if (window.confirm('کلید ذخیره‌شده پاک شود؟')) save({ ai_api_key: '--' }); }}>
+            <Trash2 size={15} /> پاک‌کردن کلید
+          </button>
+        )}
+      </div>
+      {result && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: result.ok ? 'var(--green)' : 'var(--red)' }}>
+          {result.ok ? `✓ پاسخ سرویس: ${result.text}` : `✗ ${result.text}`}
+        </div>
+      )}
     </div>
   );
 }
@@ -393,6 +535,10 @@ export default function Settings() {
       <AttachmentsCard />
 
       <CrmAccessCard />
+
+      <TaskPolicyCard />
+
+      <AiCard />
 
       <SmsCard />
 

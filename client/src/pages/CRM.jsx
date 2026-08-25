@@ -1474,9 +1474,9 @@ function MyPerformance({ userId, onBack }) {
 }
 
 // ---------------------------------------------------------------- دستیار هوشمند
-// این بخش دادهٔ ساخت‌یافته را برای تحلیل آماده می‌کند. امروز تحلیل را خودتان
-// (یا هر مدل زبانیِ بیرونی) می‌نویسید و اینجا ثبت می‌شود؛ فردا کافی است همین
-// بستهٔ داده به یک LLM داده شود و پاسخش از همین مسیر ذخیره گردد.
+// دادهٔ ساخت‌یافتهٔ فروش آماده می‌شود و مستقیماً به مدل زبانی داده می‌شود.
+// اگر هوش مصنوعی پیکربندی نشده باشد، همان مسیر دستی می‌ماند: دادهٔ تحلیل را
+// کپی کنید، به هر مدلی بدهید و پاسخ را اینجا ثبت کنید.
 function Assistant({ canManage }) {
   const { toast } = useStore();
   const [payload, setPayload] = useState(null);
@@ -1485,17 +1485,33 @@ function Assistant({ canManage }) {
   const [showData, setShowData] = useState(false);
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [ai, setAi] = useState(null);        // وضعیت سرویس هوش مصنوعی
+  const [genOpen, setGenOpen] = useState(false);
+  const [question, setQuestion] = useState('');
+  const [generating, setGenerating] = useState(false);
 
   const load = async () => {
     try {
       const [p, i] = await Promise.all([
-        api(`/crm/insights/payload?scope=${scope}`),
+        api(`/crm/insights/payload?scope=${scope}&compact=1`),
         api('/crm/insights'),
       ]);
       setPayload(p); setInsights(i.insights);
     } catch (e) { toast(e.message, 'error'); }
   };
   useEffect(() => { load(); }, [scope]);
+  useEffect(() => { api('/ai/status').then(setAi).catch(() => setAi(null)); }, []);
+
+  const generate = async () => {
+    setGenerating(true);
+    try {
+      const r = await api('/crm/insights/generate', { method: 'POST', body: { scope, question } });
+      setInsights(list => [r.insight, ...list]);
+      setGenOpen(false); setQuestion('');
+      toast('تحلیل هوش مصنوعی آماده شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setGenerating(false);
+  };
   if (!payload) return <div className="card"><div className="empty">در حال بارگذاری…</div></div>;
 
   const t = payload.totals;
@@ -1536,9 +1552,11 @@ function Assistant({ canManage }) {
               دستیار تحلیل فروش
             </b>
             <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '4px 0 0', maxWidth: 620, lineHeight: 1.9 }}>
-              همهٔ آمار فروش، دلایل باخت و متنِ گزارش‌های کارشناسان در یک بستهٔ ساخت‌یافته آماده شده است.
-              می‌توانید آن را کپی کنید و به یک مدل زبانی بدهید، سپس پاسخ را همین‌جا ثبت کنید تا
-              در تاریخچهٔ تحلیل‌ها بماند. (اتصال مستقیم به مدل بعداً به همین مسیر اضافه می‌شود.)
+              همهٔ آمار فروش، مناقصات، محصولات، کیفیت و متنِ گزارش‌های کارشناسان در یک بستهٔ
+              ساخت‌یافته آماده می‌شود و به مدل زبانی داده می‌شود تا نقاط ضعف و پیشنهادهای عملی
+              را بیرون بکشد. {ai?.ready
+                ? 'هر تحلیل با دادهٔ خامش ذخیره می‌شود تا بعداً معلوم باشد بر چه پایه‌ای نوشته شده.'
+                : 'هوش مصنوعی هنوز پیکربندی نشده است — فعلاً می‌توانید دادهٔ تحلیل را کپی کنید، به یک مدل بدهید و پاسخ را دستی ثبت کنید.'}
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1549,7 +1567,12 @@ function Assistant({ canManage }) {
               ]} />
             )}
             <button className="btn btn-ghost btn-sm" onClick={copyPrompt}><Copy size={14} /> کپی دادهٔ تحلیل</button>
-            <button className="btn btn-primary btn-sm" onClick={() => setDraft({
+            {ai?.ready && (
+              <button className="btn btn-primary btn-sm" disabled={generating} onClick={() => setGenOpen(true)}>
+                <Sparkles size={14} /> {generating ? 'در حال تحلیل…' : 'تحلیل با هوش مصنوعی'}
+              </button>
+            )}
+            <button className={`btn btn-sm ${ai?.ready ? 'btn-ghost' : 'btn-primary'}`} onClick={() => setDraft({
               scope: scope === 'team' ? 'team' : 'user', title: 'تحلیل عملکرد فروش',
               body: '', source: 'llm', model: '',
             })}><Plus size={14} /> ثبت تحلیل</button>
@@ -1578,6 +1601,9 @@ function Assistant({ canManage }) {
       <div className="card card-pad" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <b>دادهٔ آمادهٔ تحلیل</b>
+          <small style={{ color: 'var(--text-3)', marginInlineStart: 'auto', marginInlineEnd: 10 }}>
+            دقیقاً همان چیزی که به مدل داده می‌شود
+          </small>
           <button className="btn btn-ghost btn-sm" onClick={() => setShowData(v => !v)}>
             {showData ? 'پنهان کردن' : 'نمایش داده'}
           </button>
@@ -1612,6 +1638,31 @@ function Assistant({ canManage }) {
           </div>
         ))}
       </div>
+
+      {genOpen && (
+        <Modal title="تحلیل با هوش مصنوعی" onClose={() => !generating && setGenOpen(false)}
+          footer={<>
+            <button className="btn btn-ghost" disabled={generating} onClick={() => setGenOpen(false)}>انصراف</button>
+            <button className="btn btn-primary" disabled={generating} onClick={generate}>
+              <Sparkles size={15} /> {generating ? 'در حال تحلیل…' : 'شروع تحلیل'}
+            </button>
+          </>}>
+          <p style={{ fontSize: 12.8, color: 'var(--text-2)', marginTop: 0, lineHeight: 1.95 }}>
+            دادهٔ {scope === 'team' ? 'کل تیم' : 'خودتان'} — شامل {fa(payload.totals.total)} معامله،
+            {' '}{fa(payload.stage_reports.length)} گزارش کارشناس، مناقصات، محصولات و بازخوردها —
+            برای مدل <b>{ai?.model}</b> فرستاده می‌شود و تحلیل در تاریخچه ذخیره می‌گردد.
+            بسته به حجم داده، چند ده ثانیه طول می‌کشد.
+          </p>
+          <Field label="تأکید ویژه (اختیاری)"
+            hint="اگر می‌خواهید روی موضوع خاصی تمرکز کند بنویسید؛ مثلاً: «روی مناقصات و فاصلهٔ قیمتی با رقبا متمرکز شو»">
+            <textarea className="input" value={question} onChange={e => setQuestion(e.target.value)}
+              placeholder="خالی بگذارید تا تحلیل کامل انجام شود" />
+          </Field>
+          <div style={{ fontSize: 11.8, color: 'var(--text-3)', lineHeight: 1.8 }}>
+            توجه: با شروع تحلیل، این داده‌ها به سرویسِ بیرونیِ تنظیم‌شده فرستاده می‌شود.
+          </div>
+        </Modal>
+      )}
 
       {draft && (
         <Modal title="ثبت تحلیل و پیشنهاد" onClose={() => setDraft(null)} wide

@@ -83,6 +83,40 @@ function checkNoteReminders() {
   }
 }
 
+// یادآوریِ زمان‌دارِ خودِ وظیفه و مراحلِ آن — کاربر می‌گوید «شنبه ساعت ۹ یادم بنداز»
+function checkTaskAndStepReminders() {
+  const nowIso = new Date().toISOString();
+  const tasks = db.prepare(`
+    SELECT t.*, b.full_name AS assignee_name FROM tasks t JOIN users b ON b.id = t.assignee_id
+    WHERE t.remind_at IS NOT NULL AND t.reminded = 0 AND t.status != 'done' AND t.remind_at <= ?`).all(nowIso);
+  for (const t of tasks) {
+    // مسئول انجام و همکارانِ تسک، هر دو یادآوری را می‌بینند
+    const ids = new Set([t.assignee_id,
+      ...db.prepare('SELECT user_id FROM task_participants WHERE task_id = ?').all(t.id).map(x => x.user_id)]);
+    notifyUsers([...ids], {
+      type: 'reminder',
+      title: `🔔 یادآوری وظیفه: ${t.title}`,
+      body: (t.description || '').slice(0, 160),
+      link: `/tasks?task=${t.id}`,
+    });
+    db.prepare('UPDATE tasks SET reminded = 1 WHERE id = ?').run(t.id);
+  }
+  const steps = db.prepare(`
+    SELECT s.*, t.title AS task_title, t.assignee_id, t.id AS tid FROM task_steps s JOIN tasks t ON t.id = s.task_id
+    WHERE s.remind_at IS NOT NULL AND s.reminded = 0 AND s.done = 0 AND s.remind_at <= ?`).all(nowIso);
+  for (const s of steps) {
+    const ids = new Set([s.assignee_id,
+      ...db.prepare('SELECT user_id FROM task_participants WHERE task_id = ?').all(s.tid).map(x => x.user_id)]);
+    notifyUsers([...ids], {
+      type: 'reminder',
+      title: `🔔 مرحله: ${s.title}`,
+      body: `از وظیفهٔ «${s.task_title}»`,
+      link: `/tasks?task=${s.tid}`,
+    });
+    db.prepare('UPDATE task_steps SET reminded = 1 WHERE id = ?').run(s.id);
+  }
+}
+
 // ============================================================================
 //  یادآوری‌های CRM
 //  سه چیز در فروش، فراموش‌شدنی و پرهزینه‌اند: پیگیریِ سررسیدشده، مهلتِ ارسال
@@ -222,7 +256,7 @@ function checkTicketDeadlines() {
 
 export function startReminderEngine() {
   const tick = () => {
-    try { checkWorkflowDeadlines(); checkTaskDeadlines(); checkNoteReminders(); }
+    try { checkWorkflowDeadlines(); checkTaskDeadlines(); checkNoteReminders(); checkTaskAndStepReminders(); }
     catch (e) { console.error('reminder engine error:', e); }
     // خطای CRM نباید یادآوری‌های اصلی سامانه را متوقف کند
     try { checkCrmFollowUps(); checkTenderDeadlines(); checkTicketDeadlines(); }

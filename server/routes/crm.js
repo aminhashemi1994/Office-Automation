@@ -11,8 +11,16 @@ import { notifyUsers } from '../notify.js';
 import { canAccessEverywhere, getManagedDeptIds } from '../acl.js';
 import tenderRoutes from './crm-tenders.js';
 import careRoutes from './crm-care.js';
+import { askModel, aiReady, aiConfig } from '../ai.js';
+import { SALES_ANALYST_PROMPT } from '../ai-knowledge.js';
 
 const r = Router();
+
+// Express ۴ خطای پرتاب‌شده در هندلرِ async را خودش نمی‌گیرد و نتیجه‌اش
+// unhandled rejection است — یعنی سقوطِ کلِ سرور. این پوشش، خطا را به
+// هندلرِ خطای سامانه می‌سپارد تا فقط همان درخواست ۵۰۰ بگیرد.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
 
 // ---------- دسترسی ----------
 function setting(key, fallback = '') {
@@ -854,9 +862,9 @@ r.get('/summary', (req, res) => {
 // ساخت‌یافته و فشرده برمی‌گرداند: آمار، دلایل باخت، و متنِ گزارش‌های کارشناسان.
 // فعلاً هیچ فراخوانیِ بیرونی انجام نمی‌شود (سامانه آفلاین است)؛ بعداً کافی است
 // همین payload به مدل داده شود و پاسخش در جدول crm_insights ذخیره گردد.
-r.get('/insights/payload', (req, res) => {
-  const scope = canManageAll(req.user) && req.query.scope !== 'me' ? 'team' : 'user';
-  const uid = req.user.id;
+function buildInsightPayload(user, scopeQuery) {
+  const scope = canManageAll(user) && scopeQuery !== 'me' ? 'team' : 'user';
+  const uid = user.id;
   // @mine = 1 یعنی «فقط معاملات خودم»؛ پارامترها همیشه پاس داده می‌شوند
   const ownerClause = 'AND (@mine = 0 OR d.owner_id = @uid)';
   const p = { uid, mine: scope === 'user' ? 1 : 0 };
@@ -1011,7 +1019,7 @@ r.get('/insights/payload', (req, res) => {
           success_rate: successRate(x.won_count, x.lost_count) }))
     : [];
 
-  res.json({
+  return {
     generated_at: new Date().toISOString(),
     scope,
     // راهنمای متنیِ آماده برای دادن به مدل — تا خروجی همیشه یکدست باشد
@@ -1030,7 +1038,19 @@ r.get('/insights/payload', (req, res) => {
     products, sales_focus: focus, support, feedback,
     customers_needing_attention: attention,
     people, stage_reports: reports,
-  });
+  };
+}
+
+r.get('/insights/payload', (req, res) => {
+  const payload = buildInsightPayload(req.user, req.query.scope);
+  // با compact=1 دقیقاً همان چیزی برمی‌گردد که به مدل داده می‌شود — هم برای
+  // پیش‌نمایش در رابط کاربری، هم برای مسیرِ دستی (کپی و دادن به یک مدل بیرونی).
+  // بستهٔ کامل روی دیتابیسِ پرداده چند مگابایت می‌شود و مرورگر را قفل می‌کند.
+  if (req.query.compact === '1') {
+    const { data } = compactForModel(payload);
+    return res.json(data);
+  }
+  res.json(payload);
 });
 
 // تحلیل‌های ذخیره‌شده (فعلاً دستی؛ بعداً خروجی LLM اینجا می‌نشیند)
@@ -1062,6 +1082,97 @@ r.post('/insights', (req, res) => {
       JSON.stringify(b.payload && typeof b.payload === 'object' ? b.payload : {}), req.user.id);
   res.json({ id: info.lastInsertRowid });
 });
+
+// ---------- تولید تحلیل با هوش مصنوعی ----------
+// بستهٔ دادهٔ بالا به مدل داده می‌شود و پاسخش به‌عنوان یک تحلیلِ ذخیره‌شده ثبت می‌گردد.
+// همان دادهٔ خام هم کنارش می‌ماند تا بعداً معلوم باشد تحلیل بر چه پایه‌ای نوشته شده.
+//
+// بستهٔ کامل برای فرستادن به مدل بزرگ است (تا چند صد کیلوبایت)، پس پیش از ارسال
+// فشرده می‌شود: فهرست‌های طولانی کوتاه می‌شوند و متن‌های خیلی بلند بریده می‌شوند.
+// عددهای تجمیعی (totals، success_rate، …) دست‌نخورده می‌مانند چون سبک‌اند و مهم.
+const LIST_CAPS = {
+  stage_reports: 40, customers_needing_attention: 25, products: 25,
+  rivals: 10, monthly: 18, people: 20, lost_reasons: 12, tender_lost_reasons: 12, by_source: 12,
+};
+const MAX_CHARS = 90_000;
+
+function clip(v, n) { const t = String(v ?? ''); return t.length > n ? t.slice(0, n) + '…' : t; }
+
+function compactForModel(payload) {
+  const out = { ...payload };
+  for (const [key, cap] of Object.entries(LIST_CAPS)) {
+    if (Array.isArray(out[key])) out[key] = out[key].slice(0, cap);
+  }
+  // متنِ گزارش‌ها بلندترین بخشِ بسته است — کوتاه اما خوانا نگه داشته می‌شود
+  out.stage_reports = (out.stage_reports || []).map(r => ({
+    kind: r.kind, stage: r.stage, confidence: r.confidence, created_at: r.created_at,
+    subject_title: r.subject_title, amount: r.amount,
+    summary: clip(r.summary, 400), went_well: clip(r.went_well, 300),
+    went_wrong: clip(r.went_wrong, 300), blockers: clip(r.blockers, 300),
+    next_action: clip(r.next_action, 200),
+  }));
+  if (out.feedback?.comments) {
+    out.feedback = {
+      ...out.feedback,
+      comments: out.feedback.comments.slice(0, 40)
+        .map(c => ({ ...c, comment: clip(c.comment, 300) })),
+    };
+  }
+  // اگر هنوز بزرگ بود، از پرحجم‌ترین‌ها بیشتر کم کن
+  let json = JSON.stringify(out);
+  if (json.length > MAX_CHARS) {
+    out.stage_reports = out.stage_reports.slice(0, 15);
+    if (out.feedback?.comments) out.feedback = { ...out.feedback, comments: out.feedback.comments.slice(0, 15) };
+    out.customers_needing_attention = (out.customers_needing_attention || []).slice(0, 12);
+    out.products = (out.products || []).slice(0, 12);
+    json = JSON.stringify(out);
+  }
+  return { data: out, json, truncated: json.length > MAX_CHARS };
+}
+
+r.post('/insights/generate', wrap(async (req, res) => {
+  if (!aiReady()) {
+    return res.status(503).json({ error: 'هوش مصنوعی هنوز پیکربندی نشده است؛ از مدیر سامانه بخواهید در «تنظیمات سازمان ← پشتیبانی هوشمند» آن را فعال کند' });
+  }
+  // درخواستِ صریحِ تحلیل تیمی از کاربرِ غیرمدیر باید رد شود، نه اینکه بی‌صدا
+  // به «فقط خودم» تبدیل شود — وگرنه کاربر فکر می‌کند دادهٔ تیم را دیده است.
+  if (req.body?.scope === 'team' && !canManageAll(req.user)) {
+    return res.status(403).json({ error: 'تحلیل تیمی فقط برای مدیران است' });
+  }
+  const payload = buildInsightPayload(req.user, req.body?.scope === 'me' ? 'me' : undefined);
+  const scope = payload.scope;
+  // بدون داده، تحلیل بی‌معنی است و فقط هزینه دارد
+  if (!payload.totals?.total && !payload.tenders?.total) {
+    return res.status(400).json({ error: 'هنوز داده‌ای برای تحلیل ثبت نشده است' });
+  }
+
+  const { data, json } = compactForModel(payload);
+  // پرسشِ دلخواهِ کاربر (اختیاری) — مثلاً «روی مناقصات تمرکز کن»
+  const focus = str(req.body?.question).slice(0, 500);
+  const messages = [
+    { role: 'system', content: SALES_ANALYST_PROMPT },
+    { role: 'user', content:
+      `${payload.instruction}\n\n${focus ? `تأکید ویژهٔ کاربر: ${focus}\n\n` : ''}دادهٔ CRM (JSON):\n${json}` },
+  ];
+
+  let answer;
+  try {
+    answer = await askModel(messages, { maxTokens: 2000 });
+  } catch (e) {
+    return res.status(502).json({ error: e.message });
+  }
+
+  const model = aiConfig().model;
+  const title = scope === 'team' ? 'تحلیل هوشمند عملکرد تیم فروش' : 'تحلیل هوشمند عملکرد من';
+  const info = db.prepare(`INSERT INTO crm_insights
+    (scope, target_user_id, period_from, period_to, source, model, title, body, payload, created_by)
+    VALUES (?, ?, ?, ?, 'llm', ?, ?, ?, ?, ?)`)
+    .run(scope, scope === 'user' ? req.user.id : null, '', '', model, title, answer,
+      JSON.stringify(data), req.user.id);
+  const saved = db.prepare(`SELECT i.*, u.full_name AS created_by_name FROM crm_insights i
+    LEFT JOIN users u ON u.id = i.created_by WHERE i.id = ?`).get(info.lastInsertRowid);
+  res.json({ insight: { ...saved, payload: parseJson(saved.payload, {}) } });
+}));
 
 r.delete('/insights/:id', (req, res) => {
   const i = db.prepare('SELECT * FROM crm_insights WHERE id = ?').get(req.params.id);

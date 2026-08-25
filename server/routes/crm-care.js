@@ -7,8 +7,16 @@ import { Router } from 'express';
 import db from '../db.js';
 import { notifyUsers } from '../notify.js';
 import { normalizePhone, isMobile, renderTemplate, sendOne, smsConfig } from '../sms.js';
+import { askModel, aiReady } from '../ai.js';
+import { FOLLOWUP_PROMPT } from '../ai-knowledge.js';
 
 const r = Router();
+
+// Express ۴ خطای پرتاب‌شده در هندلرِ async را خودش نمی‌گیرد و نتیجه‌اش
+// unhandled rejection است — یعنی سقوطِ کلِ سرور. این پوشش، خطا را به
+// هندلرِ خطای سامانه می‌سپارد تا فقط همان درخواست ۵۰۰ بگیرد.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
 
 const num = (v) => (v === undefined || v === null || v === '' ? 0 : Number(v) || 0);
 const str = (v) => String(v ?? '').trim();
@@ -530,7 +538,7 @@ r.get('/sms', (req, res) => {
 });
 
 // ارسال (یا صف‌کردن) پیامک — اگر درگاه تنظیم نشده باشد «شبیه‌سازی» می‌شود
-r.post('/sms', async (req, res) => {
+r.post('/sms', wrap(async (req, res) => {
   const b = req.body || {};
   const body = str(b.body);
   if (!body) return res.status(400).json({ error: 'متن پیامک الزامی است' });
@@ -555,7 +563,7 @@ r.post('/sms', async (req, res) => {
   }
   const cfg = smsConfig();
   res.json({ results, simulated: !cfg.enabled || !cfg.apiUrl || !cfg.apiKey });
-});
+}));
 
 r.post('/sms-templates', (req, res) => {
   if (!req.crmManage) return res.status(403).json({ error: 'دسترسی غیرمجاز' });
@@ -642,5 +650,66 @@ r.get('/smart-followups', (req, res) => {
 
   res.json({ customers: scored, stale_days: staleDays, scoped: !all });
 });
+
+// ============================================================================
+//  پیشنهادِ هوشمندِ پیگیری برای یک مشتری
+//  امتیازدهیِ قاعده‌محورِ بالا می‌گوید «سراغ چه کسی برویم»؛ این‌یکی می‌گوید
+//  «چه بگوییم» — از روی تاریخچهٔ واقعیِ همان مشتری: تماس‌ها، معاملات، تیکت‌ها
+//  و بازخوردها. خروجی دو چیز است: برنامهٔ اقدام برای کارشناس، و یک متن پیامکِ
+//  آمادهٔ ویرایش. هیچ‌چیز خودکار فرستاده نمی‌شود؛ کارشناس می‌بیند و تصمیم می‌گیرد.
+// ============================================================================
+r.post('/customers/:id/ai-followup', wrap(async (req, res) => {
+  if (!aiReady()) {
+    return res.status(503).json({ error: 'هوش مصنوعی هنوز پیکربندی نشده است؛ از مدیر سامانه بخواهید در «تنظیمات سازمان ← پشتیبانی هوشمند» آن را فعال کند' });
+  }
+  const c = db.prepare('SELECT * FROM crm_customers WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'مشتری یافت نشد' });
+  if (!req.crmManage && c.owner_id !== req.user.id) {
+    return res.status(403).json({ error: 'این مشتری در اختیار شما نیست' });
+  }
+
+  const clip = (v, n) => { const t = String(v ?? ''); return t.length > n ? t.slice(0, n) + '…' : t; };
+  const brief = {
+    customer: {
+      name: c.name, status: c.status, industry: c.industry, city: c.city,
+      source: c.source, note: clip(c.note, 400),
+    },
+    activities: db.prepare(`SELECT type, subject, body, outcome, happened_at, follow_up_at, follow_up_done
+      FROM crm_activities WHERE customer_id = ? ORDER BY id DESC LIMIT 15`).all(c.id)
+      .map(a => ({ ...a, body: clip(a.body, 300), outcome: clip(a.outcome, 200) })),
+    deals: db.prepare(`SELECT title, stage, amount, probability, expected_close, lost_reason, competitor, product
+      FROM crm_deals WHERE customer_id = ? ORDER BY id DESC LIMIT 10`).all(c.id),
+    stage_reports: db.prepare(`SELECT sr.stage, sr.summary, sr.went_well, sr.went_wrong, sr.blockers, sr.next_action
+      FROM crm_stage_reports sr JOIN crm_deals d ON d.id = sr.deal_id
+      WHERE d.customer_id = ? ORDER BY sr.id DESC LIMIT 10`).all(c.id)
+      .map(r2 => ({ stage: r2.stage, summary: clip(r2.summary, 300), went_well: clip(r2.went_well, 200),
+        went_wrong: clip(r2.went_wrong, 200), blockers: clip(r2.blockers, 200), next_action: clip(r2.next_action, 200) })),
+    tickets: db.prepare(`SELECT subject, type, status, severity, is_quality_issue, root_cause, created_at
+      FROM crm_tickets WHERE customer_id = ? ORDER BY id DESC LIMIT 10`).all(c.id),
+    feedback: db.prepare(`SELECT kind, score, csat, comment FROM crm_feedback
+      WHERE customer_id = ? ORDER BY id DESC LIMIT 10`).all(c.id)
+      .map(f => ({ ...f, comment: clip(f.comment, 300) })),
+    last_sms: db.prepare(`SELECT body, status, created_at FROM crm_sms
+      WHERE customer_id = ? ORDER BY id DESC LIMIT 5`).all(c.id),
+  };
+
+  const hint = str(req.body?.question).slice(0, 400);
+  let answer;
+  try {
+    answer = await askModel([
+      { role: 'system', content: FOLLOWUP_PROMPT },
+      { role: 'user', content:
+        `${hint ? `خواستهٔ کارشناس: ${hint}\n\n` : ''}پروندهٔ مشتری (JSON):\n${JSON.stringify(brief)}` },
+    ], { maxTokens: 900 });
+  } catch (e) {
+    return res.status(502).json({ error: e.message });
+  }
+
+  // مدل خواسته شده که پیامک را داخل بلوکِ ---SMS--- بگذارد تا بشود جدایش کرد
+  const m = /---SMS---\s*([\s\S]*?)\s*(?:---|$)/.exec(answer);
+  const sms = m ? m[1].trim().slice(0, 400) : '';
+  const plan = m ? answer.slice(0, m.index).trim() : answer;
+  res.json({ plan, sms, customer: { id: c.id, name: c.name, phone: c.phone } });
+}));
 
 export default r;

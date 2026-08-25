@@ -24,7 +24,7 @@ db.exec('PRAGMA foreign_keys = ON');
 //  قبلی است و کافی است جای فایل دیتابیس گذاشته شود.
 //  روی دیتابیسِ تازه (بدون جدول) کاری نمی‌کند و در اجراهای بعدی هم تکرار نمی‌شود.
 // ============================================================================
-const SCHEMA_TAG = '2026-08-15-crm-leave-pwreset-pastdays';
+const SCHEMA_TAG = '2026-08-25-projects-tasks-ai';
 try {
   const has = (t) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t);
   if (has('app_settings')) {
@@ -984,6 +984,103 @@ CREATE INDEX IF NOT EXISTS idx_pw_resets_user ON password_resets(user_id, create
 // [تاریخ گذشته] تا چند روزِ گذشته می‌توان برای این فرآیند درخواست ثبت کرد؟
 // ۰ = فقط از امروز به بعد (رفتار قبلی، پیش‌فرض همهٔ فرآیندهای موجود)
 try { db.exec('ALTER TABLE workflow_templates ADD COLUMN past_days_limit INTEGER DEFAULT 0'); } catch {}
+
+
+// ============================================================================
+//  پروژه‌ها، چک‌لیستِ مراحلِ وظیفه، اشتراک یادداشت و پشتیبانی هوشمند
+//  همه افزایشی‌اند: روی دیتابیس موجود فقط جدول/ستون تازه اضافه می‌شود.
+// ============================================================================
+db.exec(`
+-- «پروژه» همان دستهٔ کلیِ کارهاست (خرید، اداری، تحقیق و توسعه، …).
+-- هر پروژه یا شخصیِ سازنده است یا مشترکِ یک واحد/کل سازمان.
+CREATE TABLE IF NOT EXISTS projects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  color TEXT DEFAULT '#2563eb',
+  owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  scope TEXT DEFAULT 'private',      -- private | department | org
+  archived INTEGER DEFAULT 0,
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id, archived);
+CREATE INDEX IF NOT EXISTS idx_projects_dept ON projects(department_id, archived);
+
+-- مراحلِ هر وظیفه به‌صورت چک‌لیست؛ درصد پیشرفتِ وظیفه از همین‌ها حساب می‌شود.
+CREATE TABLE IF NOT EXISTS task_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  done INTEGER DEFAULT 0,
+  done_at TEXT,
+  done_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sort_order INTEGER DEFAULT 0,
+  remind_at TEXT,                    -- یادآوریِ مخصوصِ همین مرحله
+  reminded INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_steps ON task_steps(task_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_task_steps_remind ON task_steps(reminded, remind_at);
+
+-- اشتراک‌گذاری یادداشت با همکاران
+CREATE TABLE IF NOT EXISTS note_shares (
+  note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  can_edit INTEGER DEFAULT 0,        -- 0: فقط خواندن، 1: امکان ویرایش
+  created_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (note_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_note_shares_user ON note_shares(user_id);
+
+-- گفتگوی «پشتیبانی هوشمند» — هر کاربر تاریخچهٔ خودش را دارد
+CREATE TABLE IF NOT EXISTS ai_chats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_chats_user ON ai_chats(user_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id INTEGER NOT NULL REFERENCES ai_chats(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,                -- user | assistant
+  content TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_msgs ON ai_messages(chat_id, id);
+`);
+
+// [وظایف] دسته‌بندی، یادآوری، پیوست و زمان ویرایش
+try { db.exec('ALTER TABLE tasks ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL'); } catch {}
+try { db.exec('ALTER TABLE tasks ADD COLUMN remind_at TEXT'); } catch {}
+try { db.exec('ALTER TABLE tasks ADD COLUMN reminded INTEGER DEFAULT 0'); } catch {}
+try { db.exec("ALTER TABLE tasks ADD COLUMN attachments TEXT DEFAULT '[]'"); } catch {}
+try { db.exec('ALTER TABLE tasks ADD COLUMN updated_at TEXT'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id, status)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_remind ON tasks(reminded, remind_at)'); } catch {}
+// [وظایف] گزارش‌های ثبت‌شده قابل ویرایش‌اند و تاریخ ویرایش نگه داشته می‌شود
+try { db.exec('ALTER TABLE task_comments ADD COLUMN edited_at TEXT'); } catch {}
+// [یادداشت] ترتیب دستیِ کاربر (جابه‌جایی)
+try { db.exec('ALTER TABLE notes ADD COLUMN sort_order INTEGER DEFAULT 0'); } catch {}
+
+{
+  const defaults = {
+    // اگر '1' شود، انتخاب دسته‌بندی (پروژه) هنگام ساخت وظیفه اجباری می‌شود
+    tasks_require_project: '0',
+    // پشتیبانی هوشمند — پیش‌فرض خاموش؛ سامانه بدون آن کاملاً آفلاین کار می‌کند
+    ai_enabled: '0',
+    ai_base_url: 'https://api.openai.com/v1',
+    ai_model: 'gpt-4o-mini',
+    ai_api_key: '',
+    ai_temperature: '0.3',
+  };
+  const ins = db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)');
+  for (const [k, v] of Object.entries(defaults)) ins.run(k, v);
+}
 
 // ---------- seed ----------
 const userCount = db.prepare('SELECT COUNT(*) c FROM users').get().c;

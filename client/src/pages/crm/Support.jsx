@@ -4,7 +4,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Plus, Search, Headphones, ArrowRight, Pencil, Trash2, Send, MessageSquare,
-  Star, AlertTriangle, Zap, BarChart3, Check, Lock,
+  Star, AlertTriangle, Zap, BarChart3, Check, Lock, Sparkles,
 } from 'lucide-react';
 import { api } from '../../api.js';
 import { useStore } from '../../store.jsx';
@@ -489,12 +489,26 @@ function SmartFollowUps() {
   const { toast } = useStore();
   const [data, setData] = useState(null);
   const [sms, setSms] = useState(null);
+  const [ai, setAi] = useState(null);
+  const [advice, setAdvice] = useState(null);   // پیشنهادِ مدل برای یک مشتری
+  const [thinking, setThinking] = useState(0);  // id مشتری‌ای که در حال تحلیل است
 
   const load = async () => {
     try { setData(await api('/crm/smart-followups')); }
     catch (e) { toast(e.message, 'error'); }
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => { api('/ai/status').then(setAi).catch(() => setAi(null)); }, []);
+
+  // «چه بگوییم» — از روی تاریخچهٔ واقعیِ همان مشتری
+  const askAi = async (c) => {
+    setThinking(c.id);
+    try {
+      const r = await api(`/crm/customers/${c.id}/ai-followup`, { method: 'POST', body: {} });
+      setAdvice({ ...r, customer: c });
+    } catch (e) { toast(e.message, 'error'); }
+    setThinking(0);
+  };
   if (!data) return <div className="card"><div className="empty">در حال بارگذاری…</div></div>;
 
   const high = data.customers.filter(c => c.priority === 'high');
@@ -510,8 +524,9 @@ function SmartFollowUps() {
           سامانه با ترکیبِ چند نشانه (پیگیری عقب‌افتاده، تیکت باز، بازخورد منفی، مدت بی‌ارتباطی،
           معاملهٔ خواب‌رفته و ارزش مشتری) اولویت‌بندی می‌کند. مشتریِ بی‌ارتباط بعد از
           {' '}{fa(data.stale_days)} روز «نیازمند پیگیری» شمرده می‌شود.
-          همین فهرست در بستهٔ «دستیار هوشمند» هم می‌رود تا مدل زبانی بتواند اولویت‌ها را
-          بازچینی کند و متنِ پیام پیشنهاد بدهد.
+          {ai?.ready
+            ? 'برای هر مشتری می‌توانید از هوش مصنوعی بپرسید «چه بگوییم» — از روی تاریخچهٔ واقعیِ همان مشتری برنامهٔ اقدام و متن پیامک پیشنهاد می‌دهد.'
+            : 'همین فهرست در بستهٔ «دستیار هوشمند» هم می‌رود؛ با فعال‌کردن هوش مصنوعی در تنظیمات، برای هر مشتری پیشنهادِ اقدام و متن پیامک هم می‌گیرید.'}
         </p>
       </div>
 
@@ -553,10 +568,17 @@ function SmartFollowUps() {
                     {c.days_since_contact === null ? 'هرگز' : `${fa(c.days_since_contact)} روز پیش`}
                   </td>
                   <td>
-                    {c.phone && (
-                      <button className="btn btn-ghost btn-sm"
-                        onClick={() => setSms({ customer: c, body: '' })}><Send size={13} /> پیامک</button>
-                    )}
+                    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                      {ai?.ready && (
+                        <button className="btn btn-ghost btn-sm" disabled={thinking === c.id} onClick={() => askAi(c)}>
+                          <Sparkles size={13} /> {thinking === c.id ? 'در حال بررسی…' : 'پیشنهاد هوشمند'}
+                        </button>
+                      )}
+                      {c.phone && (
+                        <button className="btn btn-ghost btn-sm"
+                          onClick={() => setSms({ customer: c, body: '' })}><Send size={13} /> پیامک</button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -566,6 +588,34 @@ function SmartFollowUps() {
       </div>
 
       {sms && <QuickSms target={sms} onClose={() => setSms(null)} onDone={() => { setSms(null); load(); }} />}
+
+      {advice && (
+        <Modal title={`پیشنهاد پیگیری — ${advice.customer.name}`} onClose={() => setAdvice(null)} wide
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setAdvice(null)}>بستن</button>
+            {advice.sms && advice.customer.phone && (
+              <button className="btn btn-primary" onClick={() => {
+                setSms({ customer: advice.customer, body: advice.sms });
+                setAdvice(null);
+              }}><Send size={15} /> ارسال این پیامک</button>
+            )}
+          </>}>
+          <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 2, color: 'var(--text-1)' }}>
+            {advice.plan}
+          </div>
+          {advice.sms && (
+            <div style={{ marginTop: 14 }}>
+              <b style={{ fontSize: 12.8, display: 'block', marginBottom: 6 }}>متن پیامک پیشنهادی</b>
+              <div style={{ background: 'var(--bg-2)', borderRadius: 10, padding: '11px 13px', fontSize: 13, lineHeight: 1.95 }}>
+                {advice.sms}
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 6 }}>
+                پیش از ارسال بخوانیدش — متن را در مرحلهٔ بعد هم می‌توانید ویرایش کنید. هیچ پیامکی خودکار فرستاده نمی‌شود.
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
     </>
   );
 }

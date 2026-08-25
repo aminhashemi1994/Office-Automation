@@ -4,10 +4,11 @@ import {
   LayoutDashboard, MessageSquare, Inbox, ListTodo, Users as UsersIcon, Building2,
   GitBranch, Bell, LogOut, Cable, UserCircle, CheckCheck, BarChart3, Video, Sun, Moon, Trash2, SlidersHorizontal,
   Send, MessageSquare as MessageSquareIcon, Menu, StickyNote, Handshake, CalendarDays,
+  FolderKanban, Activity, Contact, Mail, CalendarClock, AlertTriangle, ListChecks, Clock,
 } from 'lucide-react';
 import { useStore } from './store.jsx';
 import { api } from './api.js';
-import { fmtRelative } from './utils.js';
+import { fmtRelative, fmtDateTime } from './utils.js';
 import { Toasts, Avatar } from './components/common.jsx';
 import { CallOverlay, IncomingCallBanner } from './components/CallOverlay.jsx';
 import GlobalSearch from './components/GlobalSearch.jsx';
@@ -25,6 +26,10 @@ import Recordings from './pages/Recordings.jsx';
 import Settings from './pages/Settings.jsx';
 import Profile from './pages/Profile.jsx';
 import Notes from './pages/Notes.jsx';
+import Projects from './pages/Projects.jsx';
+import Colleagues from './pages/Colleagues.jsx';
+// مانیتورینگ نمودار دارد و همه هر روز بازش نمی‌کنند — جدا بارگذاری می‌شود
+const Monitoring = lazy(() => import('./pages/Monitoring.jsx'));
 // CRM و مرخصی سنگین‌اند و همهٔ کاربران بازشان نمی‌کنند —
 // جدا بارگذاری می‌شوند تا ورودِ اولیهٔ سامانه سبک بماند.
 const CRM = lazy(() => import('./pages/CRM.jsx'));
@@ -178,12 +183,97 @@ function NotifPanel({ onClose }) {
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// منوی «یادآوری» در نوار بالا — سه چیزی که آدم صبح باید بداند:
+// کارهای امروز، کارهای عقب‌افتاده، و یادآوری‌های زمان‌دار (وظیفه، مرحله، یادداشت).
+// ---------------------------------------------------------------------------
+function AgendaPanel({ onClose }) {
+  const [data, setData] = useState(null);
+  const [tab, setTab] = useState('today');
+  const navigate = useNavigate();
+
+  useEffect(() => { api('/tasks/agenda').then(setData).catch(() => setData(null)); }, []);
+
+  const go = (to) => { onClose(); navigate(to); };
+  const today = data?.today || [];
+  const overdue = data?.overdue || [];
+  const starting = data?.starting || [];
+  const reminders = (data?.reminders || []).filter(r => new Date(r.at) <= new Date(Date.now() + 7 * 864e5));
+
+  const TABS = [
+    ['today', 'امروز', today.length + starting.length, CalendarClock],
+    ['overdue', 'دارای تأخیر', overdue.length, AlertTriangle],
+    ['reminders', 'یادآوری‌ها', reminders.length, Bell],
+  ];
+
+  const Row = ({ title, sub, tone, onClick }) => (
+    <div className="notif-item" style={{ display: 'flex', cursor: 'pointer' }} onClick={onClick}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, fontSize: 13.2 }}>{title}</div>
+        <small style={{ color: tone === 'bad' ? 'var(--red)' : 'var(--text-3)' }}>{sub}</small>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="notif-panel">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '13px 15px 8px' }}>
+        <b style={{ flex: 1 }}>برنامهٔ من</b>
+        <button className="btn btn-ghost btn-sm" onClick={() => go('/tasks')}>
+          <CalendarDays size={14} /> تقویم کاری
+        </button>
+      </div>
+      <div className="tabs" style={{ margin: '0 12px 6px' }}>
+        {TABS.map(([key, label, count, Icon]) => (
+          <button key={key} className={`tab ${tab === key ? 'active' : ''}`} onClick={() => setTab(key)}>
+            <Icon size={13} style={{ marginInlineEnd: 4, verticalAlign: '-2px' }} />{label}
+            {count > 0 && <span className="badge-count">{fmtBadge(count)}</span>}
+          </button>
+        ))}
+      </div>
+      <div style={{ overflowY: 'auto' }}>
+        {!data && <div className="empty">در حال بارگذاری…</div>}
+
+        {data && tab === 'today' && today.length + starting.length === 0 && (
+          <div className="empty">برای امروز کار مهلت‌داری ندارید 🎉</div>
+        )}
+        {data && tab === 'today' && today.map(t => (
+          <Row key={`d${t.id}`} title={t.title}
+            sub={`مهلت امروز · ${fmtDateTime(t.deadline)}${t.project_name ? ' · ' + t.project_name : ''}`}
+            onClick={() => go(`/tasks?task=${t.id}`)} />
+        ))}
+        {data && tab === 'today' && starting.map(t => (
+          <Row key={`s${t.id}`} title={t.title} sub={`شروع امروز · ${fmtDateTime(t.start_at)}`}
+            onClick={() => go(`/tasks?task=${t.id}`)} />
+        ))}
+
+        {data && tab === 'overdue' && overdue.length === 0 && <div className="empty">هیچ کاری عقب نیفتاده 🎉</div>}
+        {data && tab === 'overdue' && overdue.map(t => (
+          <Row key={t.id} title={t.title} tone="bad"
+            sub={`مهلت گذشته · ${fmtDateTime(t.deadline)}${t.project_name ? ' · ' + t.project_name : ''}`}
+            onClick={() => go(`/tasks?task=${t.id}`)} />
+        ))}
+
+        {data && tab === 'reminders' && reminders.length === 0 && <div className="empty">یادآوری‌ای برای هفتهٔ پیشِ‌رو ندارید</div>}
+        {data && tab === 'reminders' && reminders.map(r => (
+          <Row key={`${r.kind}${r.id}`} title={r.title || 'بدون عنوان'}
+            tone={new Date(r.at) < new Date() ? 'bad' : undefined}
+            sub={`${r.kind === 'note' ? 'یادداشت' : r.kind === 'step' ? `مرحله‌ای از «${r.parent_title}»` : 'وظیفه'} · ${fmtDateTime(r.at)}`}
+            onClick={() => go(r.kind === 'note' ? '/notes' : `/tasks?task=${r.task_id || r.id}`)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const TITLES = {
   '/': 'داشبورد', '/chat': 'گفتگوها', '/cartable': 'کارتابل', '/tasks': 'تسک‌ها',
   '/crm': 'CRM — مشتریان و فروش', '/leaves': 'مرخصی',
   '/users': 'کاربران', '/departments': 'واحدهای سازمانی', '/workflows': 'فرآیندها',
   '/reports': 'گزارش‌گیری', '/recordings': 'ضبط جلسات و تماس‌ها', '/settings': 'تنظیمات سازمان', '/profile': 'پروفایل',
-  '/notes': 'یادداشت‌ها و یادآوری‌ها',
+  '/notes': 'یادداشت‌ها و یادآوری‌ها', '/projects': 'پروژه‌ها و دسته‌بندی کارها',
+  '/monitoring': 'مانیتورینگ عملکرد', '/colleagues': 'همکارانم',
 };
 
 const fmtBadge = (n) => (n > 99 ? '۹۹+' : Number(n).toLocaleString('fa-IR'));
@@ -191,10 +281,12 @@ const fmtBadge = (n) => (n > 99 ? '۹۹+' : Number(n).toLocaleString('fa-IR'));
 function Layout({ children }) {
   const { user, logout, unreadNotifs, hasPerm, departments, settings, theme, toggleTheme, cartableCount, taskCount, taskCommentCount, chatUnread } = useStore();
   const [notifOpen, setNotifOpen] = useState(false);
+  const [agendaOpen, setAgendaOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const notifRef = useRef(null);
+  const agendaRef = useRef(null);
   const location = useLocation();
-  useEffect(() => { setNotifOpen(false); setDrawerOpen(false); }, [location.pathname]);
+  useEffect(() => { setNotifOpen(false); setAgendaOpen(false); setDrawerOpen(false); }, [location.pathname]);
 
   // بستن پنل اعلان‌ها با کلیک بیرون از آن
   useEffect(() => {
@@ -204,6 +296,15 @@ function Layout({ children }) {
     document.addEventListener('touchstart', handler);
     return () => { document.removeEventListener('mousedown', handler); document.removeEventListener('touchstart', handler); };
   }, [notifOpen]);
+
+  // همان رفتار برای منوی «برنامهٔ من»
+  useEffect(() => {
+    if (!agendaOpen) return;
+    const handler = (e) => { if (agendaRef.current && !agendaRef.current.contains(e.target)) setAgendaOpen(false); };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('touchstart', handler);
+    return () => { document.removeEventListener('mousedown', handler); document.removeEventListener('touchstart', handler); };
+  }, [agendaOpen]);
   const title = TITLES[location.pathname] || (location.pathname.startsWith('/cartable') ? 'کارتابل' : '');
 
   // چه کسی فرآیند می‌سازد: مدیر سامانه، سرگروه/مدیر واحد، اعضای واحد مدیریت
@@ -259,13 +360,21 @@ function Layout({ children }) {
               {taskCount > 0 && <span className="badge-count">{fmtBadge(taskCount)}</span>}
             </span>
           </NavLink>
+          {/* «نامه‌ها» همان درخواست‌های گردش‌کارند؛ کاربران با این نام سراغشان می‌آیند */}
+          <NavLink to="/cartable" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            <Mail size={19} /><span>نامه‌ها</span>
+          </NavLink>
+          <NavLink to="/projects" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><FolderKanban size={19} /><span>پروژه‌ها</span></NavLink>
           <NavLink to="/notes" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><StickyNote size={19} /><span>یادداشت‌ها</span></NavLink>
+          <NavLink to="/monitoring" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><Activity size={19} /><span>مانیتورینگ</span></NavLink>
+          <NavLink to="/colleagues" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><Contact size={19} /><span>همکارانم</span></NavLink>
           {/* [مرخصی] ماندهٔ مرخصیِ خودم را همیشه می‌بینم؛ مدیران، ماندهٔ پرسنل را */}
           <NavLink to="/leaves" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><CalendarDays size={19} /><span>مرخصی</span></NavLink>
           {/* [CRM] فقط واحدهایی که در تنظیمات سازمان مجاز شده‌اند */}
           {canUseCrm && (
             <NavLink to="/crm" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><Handshake size={19} /><span>CRM — مشتریان</span></NavLink>
           )}
+          <NavLink to="/profile" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><UserCircle size={19} /><span>پروفایل من</span></NavLink>
           {(hasPerm('users.manage') || hasPerm('departments.manage') || canBuildWorkflows || canViewReports || canViewRecordings || hasPerm('settings.manage')) && (
             <div className="nav-label">مدیریت سامانه</div>
           )}
@@ -305,6 +414,12 @@ function Layout({ children }) {
           <button className="icon-btn theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? 'حالت روشن' : 'حالت تیره'}>
             {theme === 'dark' ? <Sun size={19} /> : <Moon size={19} />}
           </button>
+          <div className="notif-wrap" ref={agendaRef}>
+            <button className="icon-btn" onClick={() => setAgendaOpen(o => !o)} title="برنامهٔ من — کارهای امروز، تأخیرها و یادآوری‌ها">
+              <CalendarClock size={19} />
+            </button>
+            {agendaOpen && <AgendaPanel onClose={() => setAgendaOpen(false)} />}
+          </div>
           <div className="notif-wrap" ref={notifRef}>
             <button className="icon-btn" onClick={() => setNotifOpen(o => !o)} title="اعلان‌ها">
               <Bell size={19} />
@@ -350,6 +465,13 @@ export default function App() {
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/profile" element={<Profile />} />
                 <Route path="/notes" element={<Notes />} />
+                <Route path="/projects" element={<Projects />} />
+                <Route path="/colleagues" element={<Colleagues />} />
+                <Route path="/monitoring" element={
+                  <Suspense fallback={<div className="content"><div className="empty">در حال بارگذاری…</div></div>}>
+                    <Monitoring />
+                  </Suspense>
+                } />
                 <Route path="/crm" element={
                   <Suspense fallback={<div className="content"><div className="empty">در حال بارگذاری…</div></div>}>
                     <CRM />

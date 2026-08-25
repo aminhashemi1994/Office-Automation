@@ -7,6 +7,12 @@ import { normalizePhone, isMobile, smsConfig, sendOne } from '../sms.js';
 
 const r = Router();
 
+// Express ۴ خطای پرتاب‌شده در هندلرِ async را خودش نمی‌گیرد و نتیجه‌اش
+// unhandled rejection است — یعنی سقوطِ کلِ سرور. این پوشش، خطا را به
+// هندلرِ خطای سامانه می‌سپارد تا فقط همان درخواست ۵۰۰ بگیرد.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+
 // مهلت اعتبار کد یک‌بارمصرف و سقف تلاش
 const CODE_TTL_MIN = 15;
 const MAX_CODE_ATTEMPTS = 5;
@@ -55,7 +61,7 @@ r.post('/change-password', authMiddleware, (req, res) => {
 //  فراموشی رمز عبور
 // ============================================================================
 // پاسخ همیشه یکسان است تا از بیرون نشود فهمید چه نام‌کاربری‌هایی وجود دارند.
-r.post('/forgot', async (req, res) => {
+r.post('/forgot', wrap(async (req, res) => {
   const username = String(req.body?.username || '').trim();
   const generic = { ok: true, message: 'اگر این نام کاربری در سامانه باشد، درخواست بازنشانی ثبت شد.' };
   if (!username) return res.status(400).json({ error: 'نام کاربری را وارد کنید' });
@@ -107,7 +113,7 @@ r.post('/forgot', async (req, res) => {
     });
   }
   res.json({ ...generic, sms: false });
-});
+}));
 
 // بازنشانی با کد پیامکی
 r.post('/reset', (req, res) => {
