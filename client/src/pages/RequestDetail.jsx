@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowRight, Check, X, Clock, Ban, SkipForward, Printer, Bell, ListTodo, Paperclip,
@@ -6,8 +6,9 @@ import {
 } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
-import { fmtDateTime, parseDate, formatFieldValue } from '../utils.js';
-import { Modal, Field, UserPicker } from '../components/common.jsx';
+import { fmtDateTime, parseDate, formatFieldValue, fa } from '../utils.js';
+import { Modal, Field, UserPicker, Avatar } from '../components/common.jsx';
+import WorkflowTree from '../components/WorkflowTree.jsx';
 import { STATUS } from './Cartable.jsx';
 import RequestFormFields, { validateRequestForm } from '../components/RequestForm.jsx';
 import { AttachmentList, AttachmentPicker, primeFilesMeta, toFileIds } from '../components/Attachments.jsx';
@@ -32,6 +33,9 @@ export default function RequestDetail() {
   const [comment, setComment] = useState('');
   const [actionFiles, setActionFiles] = useState([]); // [پیوست‌ها] فایل‌های پیوستِ اقدام
   const [note, setNote] = useState(null); // {comment, attachments} — یادداشت/پیوست بدون تغییر مرحله
+  // با کلیک روی یک گرهٔ نمودار، تاریخچه روی همان مرحله فیلتر می‌شود
+  const [stepFilter, setStepFilter] = useState(null);
+  const historyRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [makeTask, setMakeTask] = useState(null); // {title, assignee_type, assignee_id, deadline_hours}
   const [edit, setEdit] = useState(null);        // {title, data} — ویرایش عنوان و فرمِ درخواست
@@ -89,6 +93,17 @@ export default function RequestDetail() {
     setBusy(true);
     try { await api(`/workflows/requests/${req.id}/cancel`, { method: 'POST' }); await load(); refreshBadges(); toast('درخواست لغو شد'); }
     catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
+  // [رونوشت] اعلام «دریافت شد» توسط گیرندهٔ رونوشت
+  const ackCc = async () => {
+    setBusy(true);
+    try {
+      const r = await api(`/workflows/requests/${id}/ack`, { method: 'POST', body: {} });
+      await load();
+      toast(r.pending ? `ثبت شد — ${r.pending.toLocaleString('fa-IR')} نفر دیگر باقی مانده‌اند` : 'دریافت شما ثبت شد');
+    } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
   };
 
@@ -192,7 +207,9 @@ export default function RequestDetail() {
           <div>
             <h2>{req.title}</h2>
             <div style={{ fontSize: 12.8, color: 'var(--text-2)' }}>
-              {req.template_name} · {req.requester_name} ({req.requester_department || 'بدون واحد'}) · {fmtDateTime(req.created_at)}
+              {req.template_name} · {req.requester_name} ({req.requester_department || 'بدون واحد'})
+              {req.on_behalf_name ? <span className="badge badge-amber" style={{ marginInlineStart: 6 }}>از طرفِ {req.on_behalf_name}</span> : null}
+              {' '}· {fmtDateTime(req.created_at)}
             </div>
           </div>
         </div>
@@ -242,18 +259,40 @@ export default function RequestDetail() {
                 )}
               </div>
             ))}
+            {/* [پیوست عمومی] فایل‌هایی که درخواست‌دهنده به خودِ درخواست وصل کرده است */}
+            {req.request_attachments?.length > 0 && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-soft)' }}>
+                <AttachmentList ids={req.request_attachments} thumb={104} title="پیوست‌های درخواست" />
+              </div>
+            )}
           </div>
 
-          <div className="card card-pad">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <b>تاریخچه اقدامات و پیوست‌ها</b>
+          <div className="card card-pad" ref={historyRef}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 8, flexWrap: 'wrap' }}>
+              <b style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                تاریخچه اقدامات و پیوست‌ها
+                {stepFilter !== null && (
+                  <span className="badge badge-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    فقط مرحلهٔ «{req.steps.find(st => st.step_order === stepFilter)?.title || stepFilter}»
+                    <X size={12} style={{ cursor: 'pointer' }} onClick={() => setStepFilter(null)} />
+                  </span>
+                )}
+              </b>
               {/* [پیوست‌ها] هر فردِ درگیر در این سلسله‌مراتب می‌تواند فایل پیوست کند */}
               <button className="btn btn-ghost btn-sm" onClick={() => setNote({ comment: '', attachments: [] })}
                 title={req.can_attach_note ? 'ثبت یادداشت و پیوست فایل' : 'در این فرآیند فقط یادداشت متنی مجاز است'}>
                 <Paperclip size={14} /> {req.can_attach_note ? 'افزودن یادداشت / پیوست فایل' : 'افزودن یادداشت'}
               </button>
             </div>
-            {req.actions.map(a => {
+            {(() => {
+              const rows = stepFilter === null ? req.actions : req.actions.filter(a => a.step_order === stepFilter);
+              if (!rows.length) {
+                return <div style={{ fontSize: 12.8, color: 'var(--text-3)', padding: '10px 0' }}>
+                  روی این مرحله هنوز اقدامی ثبت نشده است.
+                </div>;
+              }
+              return rows;
+            })().map(a => {
               const [al, ac] = ACTION_LABEL[a.action] || ACTION_LABEL.comment;
               const atts = toFileIds((() => { try { return JSON.parse(a.attachments || '[]'); } catch { return []; } })());
               return (
@@ -277,55 +316,67 @@ export default function RequestDetail() {
 
         <div>
           <div className="card card-pad" style={{ marginBottom: 18 }}>
-            <b style={{ display: 'block', marginBottom: 16 }}>مراحل گردش کار</b>
-            <div className="steps">
-              {req.steps.map(s => {
-                const isCurrent = req.status === 'in_progress' && s.step_order === req.current_step;
-                // در «تایید نهایی درخواست‌دهنده» کل سلسله‌مراتب تایید شده است
-                const isDone = req.status === 'approved' || req.status === 'awaiting_requester'
-                  || s.step_order < req.current_step;
-                const isRejected = rejectedAt === s.step_order;
-                return (
-                  <div key={s.id} className="step-row">
-                    <div className={`step-dot ${isRejected ? 'rejected' : isDone ? 'done' : isCurrent ? 'current' : ''}`}>
-                      {isRejected ? <X size={15} /> : isDone ? <Check size={15} /> : s.step_order.toLocaleString('fa-IR')}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13.8 }}>
-                        {s.title}{!!s.is_optional && <span className="badge badge-gray" style={{ marginRight: 6 }}>اختیاری</span>}
-                      </div>
-                      <div style={{ fontSize: 12.3, color: 'var(--text-2)' }}>
-                        {s.approver_label ? <span style={{ color: 'var(--text-3)' }}>{s.approver_label} — </span> : null}
-                        مسئول: {(s.approver_people && s.approver_people.length)
-                          ? s.approver_people.map(p => p.full_name).join('، ')
-                          : (s.approvers && s.approvers.length ? s.approvers.map(userName).join('، ') : 'نامشخص')}
-                      </div>
-                      {isCurrent && req.step_due_at && (
-                        <span className={`badge ${overdue ? 'badge-red' : 'badge-amber'}`} style={{ marginTop: 4 }}>
-                          <Clock size={12} /> مهلت: {fmtDateTime(req.step_due_at)}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <b>مسیر گردش کار</b>
+              <span style={{ fontSize: 11.8, color: 'var(--text-3)', marginInlineStart: 'auto' }}>
+                {req.status === 'in_progress' ? 'الان روی مرحلهٔ برجسته است' : ''}
+              </span>
+            </div>
+            {req.orphan_steps?.length > 0 && (
+              <div className="panel-soft card-pad" style={{ marginBottom: 12, borderInlineStart: '3px solid var(--red)' }}>
+                <b style={{ fontSize: 12.8, color: 'var(--red)' }}>مرحله‌ای بدون مسئول</b>
+                <div style={{ fontSize: 12.3, color: 'var(--text-2)', marginTop: 4, lineHeight: 1.85 }}>
+                  برای {req.orphan_steps.map(t => `«${t}»`).join('، ')} هیچ سرگروه یا مدیری تعیین نشده،
+                  پس فعلاً روی میزِ مدیر سامانه افتاده است. از مدیر سامانه بخواهید در صفحهٔ «واحدها»
+                  برای واحد مربوطه سرگروه یا مدیر مشخص کند.
+                </div>
+              </div>
+            )}
+            <WorkflowTree req={req} activeStep={stepFilter}
+              onStepClick={n => {
+                setStepFilter(stepFilter === n.order ? null : n.order);
+                historyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }} />
+          </div>
+
+          {/* [رونوشت] چه کسانی در جریان‌اند و چه کسی دریافت را تایید کرده است */}
+          {req.cc?.length > 0 && (
+            <div className="card card-pad" style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <b style={{ fontSize: 13.5 }}>رونوشت</b>
+                <span className="badge badge-gray">{fa(req.cc.length)} نفر</span>
+                {req.cc_pending > 0 && (
+                  <span className="badge badge-amber">{fa(req.cc_pending)} نفر هنوز دریافت نکرده‌اند</span>
+                )}
+              </div>
+              <div style={{ display: 'grid', gap: 6 }}>
+                {req.cc.map(c => (
+                  <div key={c.user_id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.8 }}>
+                    <Avatar name={c.full_name} color={c.avatar_color} size={24} />
+                    <span style={{ flex: 1 }}>
+                      {c.full_name}
+                      {c.department_name && <span style={{ color: 'var(--text-3)' }}> · {c.department_name}</span>}
+                    </span>
+                    {c.acked_at
+                      ? <span className="badge badge-green" title={c.note || ''}>
+                          <Check size={11} /> دریافت شد — {fmtDateTime(c.acked_at)}
                         </span>
-                      )}
-                    </div>
+                      : <span className="badge badge-gray">{c.must_ack ? 'منتظر تایید دریافت' : 'در جریان است'}</span>}
                   </div>
-                );
-              })}
-              {/* [تایید نهایی درخواست‌دهنده] مرحلهٔ پایانیِ فرآیند — فقط اگر در این فرآیند فعال باشد */}
-              {(req.status === 'awaiting_requester' || !!req.requester_final_approval) && (
-                <div className="step-row">
-                  <div className={`step-dot ${req.status === 'approved' ? 'done' : req.status === 'awaiting_requester' ? 'current' : ''}`}>
-                    {req.status === 'approved' ? <Check size={15} /> : <ShieldCheck size={15} />}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13.8 }}>تایید نهایی درخواست‌دهنده</div>
-                    <div style={{ fontSize: 12.3, color: 'var(--text-2)' }}>
-                      <span style={{ color: 'var(--text-3)' }}>پس از طی همهٔ مراحل — </span>
-                      مسئول: {req.requester_name}
-                    </div>
-                  </div>
+                ))}
+              </div>
+              {req.can_ack && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-soft)' }}>
+                  <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 8px', lineHeight: 1.85 }}>
+                    این نامه به‌صورت رونوشت برای شما آمده است. شما تاییدکننده نیستید؛ فقط اعلام کنید که دیده‌اید.
+                  </p>
+                  <button className="btn btn-primary" disabled={busy} onClick={ackCc}>
+                    <Check size={16} /> دریافت شد
+                  </button>
                 </div>
               )}
             </div>
-          </div>
+          )}
 
           {req.can_act && (
             <div className="card card-pad" style={{ border: '1.5px solid var(--primary)', background: 'var(--primary-soft)' }}>

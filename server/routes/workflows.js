@@ -7,7 +7,7 @@ import db from '../db.js';
 import { requirePerm, hasPerm } from '../auth.js';
 import { notifyUsers } from '../notify.js';
 import { SIGNATURES_DIR, SHARED_FILES_DIR, UPLOADS_DIR } from '../config.js';
-import { deptManagers, canAccessEverywhere, getManagedDeptIds, isManagementMember } from '../acl.js';
+import { deptManagers, deptHeads, deptDirectors, canAccessEverywhere, getManagedDeptIds, isManagementMember } from '../acl.js';
 import { activeDeputiesOf } from './delegations.js';
 import { applyLeaveDeduction } from '../leave-hook.js';
 
@@ -152,7 +152,7 @@ function canAttach(tpl, step) {
 }
 
 // شناسه‌های فایلِ ورودی را پاک‌سازی می‌کند: فقط idهایی که واقعاً در جدول files وجود دارند
-function normalizeFileIds(value) {
+export function normalizeFileIds(value) {
   const ids = [...new Set((Array.isArray(value) ? value : value ? [value] : []).map(Number).filter(Boolean))].slice(0, 50);
   if (!ids.length) return [];
   const found = new Set(db.prepare(`SELECT id FROM files WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids).map(x => x.id));
@@ -212,9 +212,10 @@ export function canViewRequest(user, rq) {
   if (requester?.department_id && getManagedDeptIds(user).includes(requester.department_id)) return true;
   // [مورد ۶] اجازهٔ فردیِ دستی
   if (db.prepare('SELECT 1 FROM request_view_grants WHERE viewer_id = ? AND target_id = ?').get(user.id, rq.requester_id)) return true;
+  // [رونوشت] گیرندهٔ رونوشت باید بتواند نامه را باز کند و «دریافت شد» بزند
+  if (db.prepare('SELECT 1 FROM workflow_request_cc WHERE request_id = ? AND user_id = ?').get(rq.id, user.id)) return true;
   if (rq.status === 'in_progress') {
-    const step = db.prepare('SELECT * FROM workflow_steps WHERE template_id = ? AND step_order = ?')
-      .get(rq.template_id, rq.current_step);
+    const step = currentStepOf(rq);
     if (step && resolveApprovers(step, rq.requester_id).includes(user.id)) return true;
   }
   return false;
@@ -268,14 +269,29 @@ function resolveSpec(spec, requester, requesterId) {
     const u = db.prepare('SELECT id FROM users WHERE id = ? AND is_active = 1').get(spec.approver_id);
     return u ? [u.id] : [];
   }
+  // «سرگروه/مدیرِ واحدِ درخواست‌دهنده» — سه حالت: هر دو، فقط سرگروه، فقط مدیر
   if (spec.approver_type === 'requester_manager') {
     if (requester?.department_id) return deptManagers(requester.department_id).filter(id => id !== requesterId);
     return [];
   }
+  if (spec.approver_type === 'requester_head') {
+    if (requester?.department_id) return deptHeads(requester.department_id).filter(id => id !== requesterId);
+    return [];
+  }
+  if (spec.approver_type === 'requester_director') {
+    if (requester?.department_id) return deptDirectors(requester.department_id).filter(id => id !== requesterId);
+    return [];
+  }
+  // «مسئولِ یک واحد مشخص». اگر واحد هیچ مسئولی نداشته باشد، عمداً خالی برمی‌گردد تا
+  // سامانه هشدار بدهد — قبلاً همهٔ اعضای واحد تاییدکننده می‌شدند و کسی متوجه نبود.
   if (spec.approver_type === 'dept_manager' && spec.approver_id) {
-    const mgrs = deptManagers(spec.approver_id);
-    if (mgrs.length) return mgrs;
-    return db.prepare('SELECT id FROM users WHERE department_id = ? AND is_active = 1').all(spec.approver_id).map(u => u.id);
+    return deptManagers(spec.approver_id);
+  }
+  if (spec.approver_type === 'dept_head' && spec.approver_id) {
+    return deptHeads(spec.approver_id);
+  }
+  if (spec.approver_type === 'dept_director' && spec.approver_id) {
+    return deptDirectors(spec.approver_id);
   }
   // عضو یک تیم/واحد: هر یک از اعضای فعالِ آن واحد می‌تواند به‌عنوان جایگزین اقدام کند (جز خودِ درخواست‌دهنده)
   if (spec.approver_type === 'dept_member' && spec.approver_id) {
@@ -298,18 +314,32 @@ function stepSpecs(step) {
 
 // ---------- resolving approvers ----------
 // اجتماعِ افرادِ «قاعدهٔ اصلی» + همهٔ «جایگزین‌ها». هر یک از این افراد می‌تواند تایید کند.
-export function resolveApprovers(step, requesterId, { withDeputies = true } = {}) {
+export function resolveApprovers(step, requesterId, { withDeputies = true, fallback = true } = {}) {
   const requester = db.prepare('SELECT * FROM users WHERE id = ?').get(requesterId);
   const ids = new Set();
   for (const spec of stepSpecs(step)) for (const id of resolveSpec(spec, requester, requesterId)) ids.add(id);
   // نیابت/جانشینی: هر جانشینِ فعالِ یکی از تاییدکنندگان هم می‌تواند به‌نیابت اقدام کند.
   // (جلوگیری از گیرکردن درخواست‌ها هنگام نبودِ مدیر)
   if (withDeputies) for (const id of [...ids]) for (const dep of activeDeputiesOf(id)) ids.add(dep);
-  if (!ids.size) {
-    // هیچ تاییدکننده‌ای پیدا نشد → مدیران سامانه تا گردش کار متوقف نشود
+  if (!ids.size && fallback) {
+    // هیچ تاییدکننده‌ای پیدا نشد → مدیران سامانه، تا گردش کار متوقف نشود.
+    // این حالت «سالم» نیست و با stepHasApprovers جداگانه گزارش می‌شود.
     return db.prepare("SELECT id FROM users WHERE role = 'admin' AND is_active = 1").all().map(u => u.id);
   }
   return [...ids];
+}
+
+// آیا این مرحله مسئولِ واقعی دارد؟ (بدون پناه‌بردن به مدیر سامانه)
+// اگر نه، یعنی واحد سرگروه/مدیر ندارد یا کاربرِ انتخاب‌شده غیرفعال شده — و درخواست
+// عملاً روی میزِ کسی نمی‌نشیند. سامانه باید این را بلند بگوید، نه اینکه بی‌صدا رد شود.
+export function stepHasApprovers(step, requesterId) {
+  return resolveApprovers(step, requesterId, { fallback: false }).length > 0;
+}
+
+// مراحلی از یک فرآیند که برای این درخواست‌دهنده مسئولی ندارند
+export function stepsWithoutApprovers(steps, requesterId) {
+  return (steps || []).filter(st => !stepHasApprovers(st, requesterId))
+    .map(st => ({ step_order: st.step_order, title: st.title, approver_label: describeApprover(st) }));
 }
 
 // توضیح خوانا از قاعده تاییدکننده هر مرحله
@@ -318,7 +348,14 @@ function describeApprover(step) {
     const u = db.prepare('SELECT full_name FROM users WHERE id = ?').get(step.approver_id);
     return u ? `کاربر مشخص: ${u.full_name}` : 'کاربر مشخص (نامشخص)';
   }
-  if (step.approver_type === 'requester_manager') return 'سرگروه واحد درخواست‌دهنده';
+  if (step.approver_type === 'requester_manager') return 'سرگروه یا مدیرِ واحد درخواست‌دهنده';
+  if (step.approver_type === 'requester_head') return 'سرگروه واحد درخواست‌دهنده';
+  if (step.approver_type === 'requester_director') return 'مدیر واحد درخواست‌دهنده';
+  if ((step.approver_type === 'dept_head' || step.approver_type === 'dept_director') && step.approver_id) {
+    const d = db.prepare('SELECT name FROM departments WHERE id = ?').get(step.approver_id);
+    const what = step.approver_type === 'dept_head' ? 'سرگروه' : 'مدیر';
+    return d ? `${what} واحد ${d.name}` : `${what} واحد`;
+  }
   if (step.approver_type === 'dept_manager' && step.approver_id) {
     const d = db.prepare('SELECT name FROM departments WHERE id = ?').get(step.approver_id);
     return d ? `مدیر واحد ${d.name}` : 'مدیر واحد (نامشخص)';
@@ -352,7 +389,29 @@ function getSteps(templateId) {
   return db.prepare('SELECT * FROM workflow_steps WHERE template_id = ? ORDER BY step_order').all(templateId);
 }
 
+// ---------------------------------------------------------------------------
+//  مراحلِ یک درخواست
+//  اگر درخواست «نسخهٔ اختصاصی» داشته باشد (مسیرِ پویا: تاییدکننده/مهلتِ انتخاب‌شده
+//  هنگام ثبت)، همان ملاک است — نه مراحلِ فعلیِ فرآیند. نتیجه‌اش این است که تغییرِ
+//  بعدیِ فرآیند، درخواست‌های در جریان را به‌هم نمی‌ریزد.
+// ---------------------------------------------------------------------------
+function hasOwnSteps(requestId) {
+  return !!db.prepare('SELECT 1 FROM workflow_request_steps WHERE request_id = ?').get(requestId);
+}
+
+function requestSteps(request) {
+  const own = db.prepare('SELECT * FROM workflow_request_steps WHERE request_id = ? ORDER BY step_order')
+    .all(request.id);
+  return own.length ? own : getSteps(request.template_id);
+}
+
+export function currentStepOfRequest(request) { return currentStepOf(request); }
+
 function currentStepOf(request) {
+  if (hasOwnSteps(request.id)) {
+    return db.prepare('SELECT * FROM workflow_request_steps WHERE request_id = ? AND step_order = ?')
+      .get(request.id, request.current_step);
+  }
   return db.prepare('SELECT * FROM workflow_steps WHERE template_id = ? AND step_order = ?')
     .get(request.template_id, request.current_step);
 }
@@ -419,21 +478,29 @@ function requestDetail(id, userId) {
     LEFT JOIN departments d ON d.id = u.department_id
     WHERE r.id = ?`).get(id);
   if (!req_) return null;
-  const steps = getSteps(req_.template_id).map(s => {
+  const steps = requestSteps(req_).map(s => {
     const people = approverPeople(s, req_.requester_id);
-    return { ...s, approvers: people.map(p => p.id), approver_people: people, approver_label: describeApprover(s) };
+    return {
+      ...s, approvers: people.map(p => p.id), approver_people: people, approver_label: describeApprover(s),
+      // اگر مسئولِ واقعی ندارد، رابط کاربری باید علامتش بزند نه اینکه نامِ مدیر سامانه را نشان بدهد
+      has_approvers: stepHasApprovers(s, req_.requester_id),
+      // شمارِ یادداشت‌های ثبت‌شده روی همین مرحله — برای نمایش روی نمودار
+      comment_count: db.prepare(`SELECT COUNT(*) c FROM workflow_actions
+        WHERE request_id = ? AND step_order = ? AND action IN ('comment', 'ack')`).get(req_.id, s.step_order).c,
+    };
   });
-  // requires_signature هر اقدام از روی مرحلهٔ متناظرش تعیین می‌شود
+  // requires_signature هر اقدام از روی مرحلهٔ متناظرِ *همین درخواست* تعیین می‌شود.
+  // (پیش از این از مراحلِ فرآیند خوانده می‌شد و روی مسیرِ پویا اشتباه در می‌آمد.)
+  const sigByStep = new Map(steps.map(st => [st.step_order, st.requires_signature]));
   const actions = db.prepare(`
     SELECT a.*, u.full_name AS actor_name, u.position AS actor_position,
            dpt.name AS actor_department,
-           (u.signature_path IS NOT NULL AND u.signature_path != '') AS has_signature,
-           s.requires_signature AS step_requires_signature
+           (u.signature_path IS NOT NULL AND u.signature_path != '') AS has_signature
     FROM workflow_actions a
     JOIN users u ON u.id = a.actor_id
     LEFT JOIN departments dpt ON dpt.id = u.department_id
-    LEFT JOIN workflow_steps s ON s.template_id = ? AND s.step_order = a.step_order
-    WHERE a.request_id = ? ORDER BY a.id`).all(req_.template_id, id);
+    WHERE a.request_id = ? ORDER BY a.id`).all(id)
+    .map(a => ({ ...a, step_requires_signature: sigByStep.get(a.step_order) ?? 1 }));
   const cur = steps.find(s => s.step_order === req_.current_step);
   const viewer = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   const can_act = req_.status === 'in_progress' && !!cur && cur.approvers.includes(userId);
@@ -454,17 +521,29 @@ function requestDetail(id, userId) {
   let tplAtt = [];
   try { tplAtt = JSON.parse(db.prepare('SELECT attachments FROM workflow_templates WHERE id = ?').get(req_.template_id)?.attachments || '[]'); } catch {}
   const actionAtt = actions.flatMap(a => { try { return JSON.parse(a.attachments || '[]'); } catch { return []; } });
+  // [پیوست عمومی] فایل‌هایی که به خودِ درخواست وصل شده‌اند
+  let reqAtt = [];
+  try { reqAtt = JSON.parse(req_.attachments || '[]'); } catch {}
   const files = filesMetaByIds([
     ...fileIdsInForm(req_.form_schema, req_.form_data),
     ...actionAtt,
+    ...reqAtt.map(Number),
     ...tplAtt.map(Number),
   ]);
   // [پیوست‌ها] آیا کاربر اجازهٔ پیوست دارد؟ (کلید سراسری ← تنظیم فرآیند ← تنظیم مرحله)
   const tplRow = db.prepare('SELECT allow_attachments FROM workflow_templates WHERE id = ?').get(req_.template_id);
   const can_attach_action = canAttach(tplRow, cur || null);                 // همراهِ تایید/رد/عبور
   const can_attach_note = canAttach(tplRow, can_act ? cur : null);           // یادداشت/پیوستِ آزاد
+  // [رونوشت] چه کسانی در جریان‌اند و چه کسی دریافت را تایید کرده است
+  const cc = ccOf(req_.id);
+  const myCc = cc.find(c2 => c2.user_id === userId) || null;
   return {
     ...req_, steps, actions, files, can_attach_action, can_attach_note,
+    request_attachments: reqAtt,
+    cc, cc_pending: cc.filter(c2 => c2.must_ack && !c2.acked_at).length,
+    can_ack: !!myCc && !myCc.acked_at,
+    // مرحله‌هایی که مسئولِ واقعی ندارند — رابط کاربری هشدار می‌دهد
+    orphan_steps: steps.filter(st => !st.has_approvers).map(st => st.title),
     can_act, can_final, can_return, return_min_step, return_max_step, can_resubmit, can_edit, can_delete,
   };
 }
@@ -573,7 +652,15 @@ r.get('/templates', (req, res) => {
   const all = db.prepare('SELECT * FROM workflow_templates ORDER BY id DESC').all();
   const templates = all
     .filter(t => templateInScope(req.user, t))
-    .map(t => ({ ...t, steps: getSteps(t.id).map(s => enrichStep(s)) }));
+    .map(t => ({
+      ...t,
+      steps: getSteps(t.id).map(s => enrichStep(s)),
+      can_manage: canManageTemplate(req.user, t),
+      owner_dept_name: t.owner_dept_id
+        ? db.prepare('SELECT name FROM departments WHERE id = ?').get(t.owner_dept_id)?.name || null : null,
+      // مرحله‌هایی که هیچ مسئولی ندارند — هشدارِ فرم‌ساز
+      orphan_steps: stepsWithoutApprovers(getSteps(t.id), req.user.id).map(o => o.title),
+    }));
   res.json({ templates });
 });
 
@@ -589,8 +676,9 @@ r.get('/templates/:id/preview', (req, res) => {
 function insertSteps(templateId, steps) {
   const ins = db.prepare(`INSERT INTO workflow_steps
     (template_id, step_order, title, approver_type, approver_id, approver_role, deadline_hours, is_optional, alt_approvers, requires_signature, notify_approver,
-     create_task, task_assignee_type, task_assignee_id, task_deadline_hours, task_title, task_notify, allow_attachments)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+     create_task, task_assignee_type, task_assignee_id, task_deadline_hours, task_title, task_notify, allow_attachments,
+     dynamic_approver, dynamic_deadline, skippable_at_submit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   steps.forEach((s, i) => {
     const alts = Array.isArray(s.alt_approvers) ? s.alt_approvers
       .filter(a => a && a.approver_type)
@@ -607,11 +695,42 @@ function insertSteps(templateId, steps) {
       String(s.task_title || ''),
       s.task_notify === 0 || s.task_notify === false ? 0 : 1,
       // [پیوست‌ها] اجازهٔ پیوست فایل در این مرحله (پیش‌فرض: مجاز)
-      s.allow_attachments === 0 || s.allow_attachments === false ? 0 : 1);
+      s.allow_attachments === 0 || s.allow_attachments === false ? 0 : 1,
+      // [مسیر پویا] تاییدکننده/مهلت هنگام ثبتِ هر درخواست تعیین شود؛ و مرحلهٔ حذف‌شدنی
+      s.dynamic_approver ? 1 : 0, s.dynamic_deadline ? 1 : 0, s.skippable_at_submit ? 1 : 0);
   });
 }
 
 // فیلدهای سطح‌فرآیندِ جدید (اسکوپ/ضمیمه/مهلت‌کل/تسک‌نهایی) — از body استخراج و normalize می‌شوند
+// ---------------------------------------------------------------------------
+//  چه کسی یک فرآیند را «مدیریت» می‌کند؟
+//  تا پیش از این فقط سازنده و دارندهٔ workflows.manage بودند؛ نتیجه‌اش این بود که
+//  اگر به سرگروهی مجوز می‌دادید، به فرآیندهای همهٔ واحدها دسترسی پیدا می‌کرد.
+//  حالا هر فرآیند «واحدِ صاحب» دارد و فقط سرگروه/مدیرِ همان واحد (یا سازنده‌اش)
+//  می‌تواند تغییرش دهد. مدیر سامانه همچنان به همه دسترسی دارد.
+// ---------------------------------------------------------------------------
+function canManageTemplate(user, tpl) {
+  if (user.role === 'admin') return true;
+  if (tpl.created_by === user.id && canBuildWorkflows(user)) return true;
+  if (tpl.owner_dept_id && getManagedDeptIds(user).includes(Number(tpl.owner_dept_id))) return true;
+  // فرآیندِ بی‌صاحب (از نسخه‌های قبل) → همان قاعدهٔ قدیمی، تا چیزی قفل نشود
+  if (!tpl.owner_dept_id && hasPerm(user, 'workflows.manage')) return true;
+  return false;
+}
+
+function manageTemplateError(tpl) {
+  const d = tpl.owner_dept_id
+    ? db.prepare('SELECT name FROM departments WHERE id = ?').get(tpl.owner_dept_id)?.name : null;
+  return d
+    ? `این فرآیند متعلق به واحد «${d}» است؛ فقط سرگروه یا مدیر همان واحد (یا مدیر سامانه) می‌تواند تغییرش دهد`
+    : 'فقط سازندهٔ فرآیند یا مدیر سامانه می‌تواند آن را تغییر دهد';
+}
+
+const validDeptId = (v) => {
+  const id = Number(v) || 0;
+  return id && db.prepare('SELECT 1 FROM departments WHERE id = ?').get(id) ? id : null;
+};
+
 function templateExtras(body, prev = {}) {
   const num = (v, d) => (v === undefined || v === null || v === '' ? d : Number(v) || 0);
   return {
@@ -641,6 +760,18 @@ function templateExtras(body, prev = {}) {
     // [تاریخ گذشته] تا چند روزِ قبل می‌توان برای این فرآیند درخواست ثبت کرد (۰ = فقط از امروز)
     past_days_limit: body.past_days_limit !== undefined
       ? Math.max(0, Math.min(365, Number(body.past_days_limit) || 0)) : (prev.past_days_limit ?? 0),
+    // [مالکیت] واحدِ صاحبِ فرآیند — مبنای اینکه چه کسی اجازهٔ ویرایشش را دارد.
+    // واحدِ ناموجود به null تبدیل می‌شود تا به‌جای خطای پایگاه‌داده، پیام روشن بگیریم.
+    owner_dept_id: body.owner_dept_id !== undefined
+      ? validDeptId(body.owner_dept_id) : (prev.owner_dept_id ?? null),
+    // [ثبت به نمایندگی] اجازهٔ ثبتِ درخواست از طرفِ شخص دیگر
+    allow_on_behalf: body.allow_on_behalf !== undefined
+      ? (body.allow_on_behalf ? 1 : 0) : (prev.allow_on_behalf ?? 0),
+    // [رونوشت] ۰ خاموش | ۱ اختیاری | ۲ الزامی
+    cc_mode: body.cc_mode !== undefined
+      ? Math.max(0, Math.min(2, Number(body.cc_mode) || 0)) : (prev.cc_mode ?? 0),
+    cc_require_ack: body.cc_require_ack !== undefined
+      ? (body.cc_require_ack ? 1 : 0) : (prev.cc_require_ack ?? 1),
   };
 }
 
@@ -649,17 +780,24 @@ r.post('/templates', (req, res) => {
   const { name, description = '', title_placeholder = '', form_schema = [], steps = [],
     notify_requester_on_final = 1, requester_signature = 1 } = req.body || {};
   if (!name || !steps.length) return res.status(400).json({ error: 'نام و حداقل یک مرحله الزامی است' });
+  if (req.body?.owner_dept_id && !validDeptId(req.body.owner_dept_id)) {
+    return res.status(400).json({ error: 'واحدِ صاحبِ فرآیند معتبر نیست' });
+  }
   const ex = templateExtras(req.body || {});
   const result = db.prepare(`INSERT INTO workflow_templates
     (name, description, title_placeholder, form_schema, notify_requester_on_final, requester_signature, created_by,
      scope_dept_ids, attachments, total_deadline_hours, final_task_enabled, final_task_assignee_type, final_task_assignee_id, final_task_deadline_hours, final_task_notify,
-     allow_attachments, requester_final_approval, leave_enabled, leave_map, past_days_limit)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     allow_attachments, requester_final_approval, leave_enabled, leave_map, past_days_limit,
+     owner_dept_id, allow_on_behalf, cc_mode, cc_require_ack)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(name, description, title_placeholder, JSON.stringify(form_schema),
       notify_requester_on_final ? 1 : 0, requester_signature ? 1 : 0, req.user.id,
       ex.scope_dept_ids, ex.attachments, ex.total_deadline_hours, ex.final_task_enabled,
       ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify,
-      ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map, ex.past_days_limit);
+      ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map, ex.past_days_limit,
+      // واحدِ صاحب: اگر مشخص نشده باشد، واحدِ خودِ سازنده — تا فرآیند بی‌صاحب نماند
+      ex.owner_dept_id ?? req.user.department_id ?? null,
+      ex.allow_on_behalf, ex.cc_mode, ex.cc_require_ack);
   insertSteps(result.lastInsertRowid, steps);
   res.json({ id: result.lastInsertRowid });
 });
@@ -667,9 +805,8 @@ r.post('/templates', (req, res) => {
 r.put('/templates/:id', (req, res) => {
   const t = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'فرآیند یافت نشد' });
-  // سازنده فرآیند یا دارنده workflows.manage می‌تواند ویرایش کند
-  if (!hasPerm(req.user, 'workflows.manage') && !(canBuildWorkflows(req.user) && t.created_by === req.user.id)) {
-    return res.status(403).json({ error: 'فقط سازنده فرآیند یا مدیر سامانه می‌تواند آن را ویرایش کند' });
+  if (!canManageTemplate(req.user, t)) {
+    return res.status(403).json({ error: manageTemplateError(t) });
   }
   const { name, description, title_placeholder, form_schema, steps, is_active,
     notify_requester_on_final, requester_signature } = req.body || {};
@@ -679,7 +816,8 @@ r.put('/templates/:id', (req, res) => {
     scope_dept_ids = ?, attachments = ?, total_deadline_hours = ?, final_task_enabled = ?,
     final_task_assignee_type = ?, final_task_assignee_id = ?, final_task_deadline_hours = ?, final_task_notify = ?,
     allow_attachments = ?, requester_final_approval = ?, leave_enabled = ?, leave_map = ?,
-    past_days_limit = ? WHERE id = ?`)
+    past_days_limit = ?, owner_dept_id = ?, allow_on_behalf = ?, cc_mode = ?, cc_require_ack = ?
+    WHERE id = ?`)
     .run(name ?? t.name, description ?? t.description,
       title_placeholder ?? t.title_placeholder,
       form_schema !== undefined ? JSON.stringify(form_schema) : t.form_schema,
@@ -689,7 +827,7 @@ r.put('/templates/:id', (req, res) => {
       ex.scope_dept_ids, ex.attachments, ex.total_deadline_hours, ex.final_task_enabled,
       ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify,
       ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map,
-      ex.past_days_limit, t.id);
+      ex.past_days_limit, ex.owner_dept_id, ex.allow_on_behalf, ex.cc_mode, ex.cc_require_ack, t.id);
   if (steps) {
     const hasOpen = db.prepare("SELECT 1 FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").get(t.id);
     if (hasOpen) return res.status(400).json({ error: 'تا زمانی که درخواست در جریان دارد، مراحل قابل تغییر نیست' });
@@ -703,8 +841,8 @@ r.put('/templates/:id', (req, res) => {
 r.delete('/templates/:id', (req, res) => {
   const t = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'فرآیند یافت نشد' });
-  if (!hasPerm(req.user, 'workflows.manage') && !(canBuildWorkflows(req.user) && t.created_by === req.user.id)) {
-    return res.status(403).json({ error: 'فقط سازنده فرآیند یا مدیر سامانه می‌تواند آن را حذف کند' });
+  if (!canManageTemplate(req.user, t)) {
+    return res.status(403).json({ error: manageTemplateError(t) });
   }
   const count = db.prepare('SELECT COUNT(*) c FROM workflow_requests WHERE template_id = ?').get(t.id).c;
   if (count > 0) {
@@ -713,6 +851,133 @@ r.delete('/templates/:id', (req, res) => {
   db.prepare('DELETE FROM workflow_steps WHERE template_id = ?').run(t.id);
   db.prepare('DELETE FROM workflow_templates WHERE id = ?').run(t.id);
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+//  مسیرِ پویا
+//  مرحله‌ای که در تعریفِ فرآیند «پویا» علامت خورده، هنگام ثبتِ درخواست از کاربر
+//  می‌پرسد چه کسی تایید کند و مهلت چقدر باشد. نتیجه به‌صورت نسخهٔ اختصاصیِ همان
+//  درخواست ذخیره می‌شود تا مسیرِ هر درخواست، مستقل و ثبت‌شده بماند.
+//  routing از کلاینت: { [template_step_id]: { skip, deadline_hours, approvers: [spec…] } }
+// ---------------------------------------------------------------------------
+const SPEC_TYPES = new Set(['user', 'dept_manager', 'dept_head', 'dept_director', 'dept_member',
+  'role', 'requester_manager', 'requester_head', 'requester_director']);
+
+function cleanSpec(a) {
+  if (!a || !SPEC_TYPES.has(a.approver_type)) return null;
+  return {
+    approver_type: a.approver_type,
+    approver_id: Number(a.approver_id) || null,
+    approver_role: a.approver_role || null,
+  };
+}
+
+// آیا این مرحله برای اجرا آماده است؟ (قاعده‌ای که نیاز به هدف دارد ولی هدف ندارد، آماده نیست)
+function specComplete(a) {
+  if (!a) return false;
+  if (['user', 'dept_manager', 'dept_head', 'dept_director', 'dept_member'].includes(a.approver_type)) return !!a.approver_id;
+  if (a.approver_type === 'role') return !!a.approver_role;
+  return true;
+}
+
+// ساخت نسخهٔ اختصاصیِ مراحل برای یک درخواست. اگر هیچ مرحله‌ای پویا/حذف‌شدنی نباشد
+// و کاربر هم چیزی تغییر نداده باشد، چیزی ساخته نمی‌شود و همان مراحلِ فرآیند ملاک است.
+function buildRequestSteps(requestId, templateSteps, routing) {
+  const needs = templateSteps.some(st => st.dynamic_approver || st.dynamic_deadline || st.skippable_at_submit);
+  if (!needs) return null;
+  const rows = [];
+  for (const st of templateSteps) {
+    const cfg = routing?.[st.id] || routing?.[String(st.id)] || {};
+    if (st.skippable_at_submit && cfg.skip) continue;   // کاربر این مرحله را لازم ندانسته
+    let type = st.approver_type, id = st.approver_id, role = st.approver_role;
+    let alts = [];
+    try { alts = JSON.parse(st.alt_approvers || '[]'); } catch {}
+    if (st.dynamic_approver && Array.isArray(cfg.approvers) && cfg.approvers.length) {
+      const specs = cfg.approvers.map(cleanSpec).filter(specComplete);
+      if (specs.length) { ({ approver_type: type, approver_id: id, approver_role: role } = specs[0]); alts = specs.slice(1); }
+    }
+    const deadline = st.dynamic_deadline && cfg.deadline_hours !== undefined && cfg.deadline_hours !== ''
+      ? Math.max(0, Number(cfg.deadline_hours) || 0) : st.deadline_hours;
+    rows.push({ ...st, approver_type: type, approver_id: id, approver_role: role,
+      alt_approvers: JSON.stringify(alts), deadline_hours: deadline });
+  }
+  if (!rows.length) return null;
+  const ins = db.prepare(`INSERT INTO workflow_request_steps
+    (request_id, step_order, template_step_id, title, approver_type, approver_id, approver_role, alt_approvers,
+     deadline_hours, is_optional, requires_signature, notify_approver, allow_attachments,
+     create_task, task_assignee_type, task_assignee_id, task_deadline_hours, task_title, task_notify)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  rows.forEach((st, i) => ins.run(requestId, i + 1, st.id, st.title, st.approver_type, st.approver_id,
+    st.approver_role, st.alt_approvers, st.deadline_hours, st.is_optional, st.requires_signature,
+    st.notify_approver, st.allow_attachments, st.create_task, st.task_assignee_type, st.task_assignee_id,
+    st.task_deadline_hours, st.task_title, st.task_notify));
+  return db.prepare('SELECT * FROM workflow_request_steps WHERE request_id = ? ORDER BY step_order').all(requestId);
+}
+
+// ---------------------------------------------------------------------------
+//  رونوشت
+//  گیرندگانِ رونوشت تاییدکننده نیستند: فقط در جریان قرار می‌گیرند و — اگر فرآیند
+//  بخواهد — باید «دریافت شد» بزنند تا معلوم باشد نامه را دیده‌اند. تا وقتی همه
+//  تایید دریافت نکرده‌اند، درخواست‌دهنده در صفحهٔ درخواست می‌بیند چه کسی مانده.
+// ---------------------------------------------------------------------------
+function ccOf(requestId) {
+  return db.prepare(`SELECT c.user_id, c.must_ack, c.acked_at, c.note,
+      u.full_name, u.avatar_color, d.name AS department_name
+    FROM workflow_request_cc c
+    JOIN users u ON u.id = c.user_id
+    LEFT JOIN departments d ON d.id = u.department_id
+    WHERE c.request_id = ? ORDER BY u.full_name`).all(requestId);
+}
+
+function setRequestCc(requestId, list, tpl, actor) {
+  if (!tpl.cc_mode) return { ok: true, ids: [] };
+  const ids = [...new Set((Array.isArray(list) ? list : []).map(Number).filter(Boolean))]
+    .filter(id => id !== actor.id)
+    .filter(id => db.prepare('SELECT 1 FROM users WHERE id = ? AND is_active = 1').get(id));
+  if (tpl.cc_mode === 2 && !ids.length) {
+    return { error: 'برای این فرآیند انتخاب حداقل یک گیرندهٔ رونوشت الزامی است' };
+  }
+  db.prepare('DELETE FROM workflow_request_cc WHERE request_id = ?').run(requestId);
+  const ins = db.prepare('INSERT OR IGNORE INTO workflow_request_cc (request_id, user_id, must_ack) VALUES (?, ?, ?)');
+  for (const id of ids) ins.run(requestId, id, tpl.cc_require_ack ? 1 : 0);
+  return { ok: true, ids };
+}
+
+function notifyCc(requestId, tpl, title, actor) {
+  const rows = ccOf(requestId);
+  if (!rows.length) return;
+  const needAck = rows.some(x => x.must_ack);
+  notifyUsers(rows.map(r2 => r2.user_id), {
+    type: 'workflow',
+    title: `رونوشت: ${tpl.name}`,
+    body: `«${title}» توسط ${actor.full_name} ثبت شد و رونوشتش برای شما آمده است`
+      + (needAck ? ' — لطفاً «دریافت شد» را بزنید' : ''),
+    link: `/cartable/${requestId}`,
+  });
+}
+
+// «دریافت شد» — گیرندهٔ رونوشت اعلام می‌کند نامه را دیده است
+r.post('/requests/:id/ack', (req, res) => {
+  const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  const row = db.prepare('SELECT * FROM workflow_request_cc WHERE request_id = ? AND user_id = ?')
+    .get(rq.id, req.user.id);
+  if (!row) return res.status(403).json({ error: 'رونوشت این درخواست برای شما نیامده است' });
+  if (row.acked_at) return res.json({ ok: true, already: true });
+  const note = String(req.body?.note || '').trim().slice(0, 500);
+  db.prepare("UPDATE workflow_request_cc SET acked_at = datetime('now'), note = ? WHERE request_id = ? AND user_id = ?")
+    .run(note, rq.id, req.user.id);
+  db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, ?, ?, ?, ?)')
+    .run(rq.id, rq.current_step, req.user.id, 'ack', note || 'دریافت شد');
+  const pending = ccOf(rq.id).filter(x => x.must_ack && !x.acked_at).length;
+  notifyUsers([rq.requester_id], {
+    type: 'workflow',
+    title: 'رونوشت دریافت شد',
+    body: `${req.user.full_name} دریافتِ «${rq.title}» را تایید کرد`
+      + (pending ? ` — ${pending.toLocaleString('fa-IR')} نفر باقی مانده` : ' — همه دریافت کردند'),
+    link: `/cartable/${rq.id}`,
+  });
+  res.json({ ok: true, pending });
 });
 
 // ---------- requests ----------
@@ -733,21 +998,77 @@ r.post('/requests', (req, res) => {
     const dateErr = checkPastDates(tpl, form_data);
     if (dateErr) return res.status(400).json({ error: dateErr });
   }
-  const steps = getSteps(tpl.id);
-  if (!steps.length) return res.status(400).json({ error: 'این فرآیند مرحله‌ای ندارد' });
+  const tplSteps = getSteps(tpl.id);
+  if (!tplSteps.length) return res.status(400).json({ error: 'این فرآیند مرحله‌ای ندارد' });
+
+  // [پیوست عمومی] فایل‌هایی که به خودِ درخواست وصل می‌شوند، مستقل از فیلدهای فرم
+  const reqAttachments = normalizeFileIds(req.body?.attachments);
+  if (reqAttachments.length && !canAttach(tpl, null)) {
+    return res.status(400).json({ error: 'پیوست فایل در این فرآیند مجاز نیست' });
+  }
+
+  // [ثبت به نمایندگی] فقط اگر در تعریفِ فرآیند اجازه داده شده باشد
+  let onBehalfId = null, onBehalfName = '';
+  if (tpl.allow_on_behalf) {
+    const bid = Number(req.body?.on_behalf_id) || null;
+    if (bid) {
+      const u = db.prepare('SELECT id, full_name FROM users WHERE id = ? AND is_active = 1').get(bid);
+      if (!u) return res.status(400).json({ error: 'شخصِ انتخاب‌شده برای «درخواست از طرفِ» معتبر نیست' });
+      onBehalfId = u.id; onBehalfName = u.full_name;
+    } else {
+      onBehalfName = String(req.body?.on_behalf_name || '').trim().slice(0, 120);
+    }
+  }
+
+  const result = db.prepare(`INSERT INTO workflow_requests
+    (template_id, requester_id, title, form_data, step_due_at, attachments, on_behalf_id, on_behalf_name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(tpl.id, req.user.id, title, JSON.stringify(form_data), null,
+      JSON.stringify(reqAttachments), onBehalfId, onBehalfName);
+  const requestId = Number(result.lastInsertRowid);
+
+  // مسیرِ پویا (اگر فرآیند مرحلهٔ پویا داشته باشد) و تعیین مرحلهٔ اول
+  const ownSteps = buildRequestSteps(requestId, tplSteps, req.body?.routing);
+  const steps = ownSteps || tplSteps;
   const first = steps[0];
-  const result = db.prepare(`INSERT INTO workflow_requests (template_id, requester_id, title, form_data, step_due_at)
-    VALUES (?, ?, ?, ?, ?)`).run(tpl.id, req.user.id, title, JSON.stringify(form_data), stepDueAt(first));
+  db.prepare('UPDATE workflow_requests SET step_due_at = ? WHERE id = ?').run(stepDueAt(first), requestId);
+
   db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, 0, ?, ?, ?)')
-    .run(result.lastInsertRowid, req.user.id, 'submit', 'ثبت درخواست');
+    .run(requestId, req.user.id, 'submit',
+      onBehalfName ? `ثبت درخواست به نمایندگی از ${onBehalfName}` : 'ثبت درخواست');
+
+  // [رونوشت] افرادی که فقط در جریان قرار می‌گیرند و تاییدکننده نیستند
+  const ccResult = setRequestCc(requestId, req.body?.cc, tpl, req.user);
+  if (ccResult.error) return res.status(400).json({ error: ccResult.error });
+
   const approvers = resolveApprovers(first, req.user.id);
   notifyApprovers(first, approvers, {
     type: 'workflow',
     title: `کارتابل: ${tpl.name}`,
     body: `«${title}» توسط ${req.user.full_name} ثبت شد و در انتظار اقدام شماست (${first.title})`,
-    link: `/cartable/${result.lastInsertRowid}`,
+    link: `/cartable/${requestId}`,
   });
-  res.json({ id: result.lastInsertRowid });
+  notifyCc(requestId, tpl, title, req.user);
+
+  // [هشدار مسئولِ گمشده] اگر مرحله‌ای مسئولِ واقعی ندارد، هم به کاربر بگو هم به مدیران
+  const orphan = stepsWithoutApprovers(steps, req.user.id);
+  if (orphan.length) {
+    const list = orphan.map(o => `«${o.title}» (${o.approver_label})`).join('، ');
+    notifyUsers(db.prepare("SELECT id FROM users WHERE role = 'admin' AND is_active = 1").all().map(u => u.id), {
+      type: 'workflow',
+      title: '⚠️ مرحله‌ای بدون مسئول',
+      body: `در «${title}» این مرحله‌ها مسئولی ندارند و روی میز شما افتاده‌اند: ${list}. `
+        + 'برای واحد مربوطه سرگروه یا مدیر تعیین کنید.',
+      link: `/cartable/${requestId}`,
+    });
+  }
+  res.json({
+    id: requestId,
+    // کلاینت این را به کاربر نشان می‌دهد؛ درخواست ثبت شده ولی مسیرش سالم نیست
+    warning: orphan.length
+      ? `این مرحله‌ها هنوز مسئولی ندارند و فعلاً به مدیر سامانه رفتند: ${orphan.map(o => o.title).join('، ')}`
+      : undefined,
+  });
 });
 
 // کارهای در انتظار اقدامِ من:
@@ -943,7 +1264,7 @@ r.post('/requests/:id/action', (req, res) => {
   const { action, comment = '', attachments = [], to_step } = req.body || {};
   const attIds = normalizeFileIds(attachments); // [پیوست‌ها] فایل‌های پیوستِ این اقدام
   const tpl = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(rq.template_id);
-  const steps = getSteps(rq.template_id);
+  const steps = requestSteps(rq);
   // مرحلهٔ «تایید نهاییِ درخواست‌دهنده»: سلسله‌مراتب تمام شده و توپ در زمینِ خودِ درخواست‌دهنده است
   const finalStage = rq.status === 'awaiting_requester';
   const step = finalStage ? null : currentStepOf(rq);
@@ -1219,7 +1540,7 @@ r.post('/requests/:id/resubmit', (req, res) => {
   if (rq.requester_id !== req.user.id && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'فقط درخواست‌دهنده می‌تواند درخواست را دوباره ارسال کند' });
   }
-  const steps = getSteps(rq.template_id);
+  const steps = requestSteps(rq);
   if (!steps.length) return res.status(400).json({ error: 'این فرآیند مرحله‌ای ندارد' });
   const target = steps.find(s => s.step_order === Number(rq.resume_step)) || steps[0];
   const tpl = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(rq.template_id);

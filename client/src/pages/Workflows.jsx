@@ -6,13 +6,20 @@ import { Modal, Field, UserPicker, Segmented } from '../components/common.jsx';
 import { AttachmentPicker } from '../components/Attachments.jsx';
 import { fa } from '../utils.js';
 
+// دو سِمَتِ واحد جدا شده‌اند: «سرگروه» و «مدیر». حالت قدیمی (هر دو با هم) هم
+// برای فرآیندهای موجود سر جایش می‌ماند تا چیزی نشکند.
 const APPROVER_TYPES = {
-  requester_manager: 'سرگروه واحدِ درخواست‌دهنده',
-  dept_manager: 'مدیر یک واحد مشخص',
+  requester_head: 'سرگروهِ واحدِ درخواست‌دهنده',
+  requester_director: 'مدیرِ واحدِ درخواست‌دهنده',
+  requester_manager: 'سرگروه یا مدیرِ واحدِ درخواست‌دهنده (هرکدام)',
+  dept_head: 'سرگروهِ یک واحد مشخص',
+  dept_director: 'مدیرِ یک واحد مشخص',
+  dept_manager: 'سرگروه یا مدیرِ یک واحد مشخص',
   dept_member: 'عضو یک تیم/واحد (هر یک از اعضا)',
   user: 'کاربر مشخص',
   role: 'همه کاربران با نقش مشخص',
 };
+const NEEDS_DEPT = ['dept_manager', 'dept_head', 'dept_director', 'dept_member'];
 const FIELD_TYPES = {
   text: 'متن',
   number: 'عدد',
@@ -132,14 +139,14 @@ export default function Workflows() {
 // ویرایشگر یک «قاعدهٔ تاییدکننده» (نوع + هدف) — برای قاعدهٔ اصلی و جایگزین‌ها استفاده می‌شود.
 // وقتی نوع، هدف نمی‌خواهد (سرگروه واحد درخواست‌دهنده)، فقط یک منوی تمام‌عرض نشان می‌دهد.
 function ApproverSpecEditor({ spec, onChange, departments, users }) {
-  const needsTarget = spec.approver_type === 'dept_manager' || spec.approver_type === 'dept_member' || spec.approver_type === 'user' || spec.approver_type === 'role';
+  const needsTarget = NEEDS_DEPT.includes(spec.approver_type) || spec.approver_type === 'user' || spec.approver_type === 'role';
   return (
     <div style={{ display: 'grid', gridTemplateColumns: needsTarget ? '1fr 1fr' : '1fr', gap: 8 }}>
       <select className="input" value={spec.approver_type}
         onChange={e => onChange({ approver_type: e.target.value, approver_id: null, approver_role: e.target.value === 'role' ? 'manager' : null })}>
         {Object.entries(APPROVER_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
       </select>
-      {(spec.approver_type === 'dept_manager' || spec.approver_type === 'dept_member') && (
+      {NEEDS_DEPT.includes(spec.approver_type) && (
         <select className="input" value={spec.approver_id || ''} onChange={e => onChange({ approver_id: Number(e.target.value) || null })}>
           <option value="">— انتخاب {spec.approver_type === 'dept_member' ? 'تیم/واحد' : 'واحد'} —</option>
           {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
@@ -177,10 +184,17 @@ function TemplateModal({ tpl, onClose, onDone }) {
 
   // نمایش دقیق فردی که در هر مرحله تایید می‌کند
   const approverPreview = (s) => {
-    if (s.approver_type === 'requester_manager') return 'سرگروه واحد درخواست‌دهنده (هنگام ثبت درخواست مشخص می‌شود)';
+    if (s.approver_type === 'requester_manager') return 'سرگروه یا مدیرِ واحد درخواست‌دهنده (هنگام ثبت مشخص می‌شود)';
+    if (s.approver_type === 'requester_head') return 'سرگروهِ واحد درخواست‌دهنده (هنگام ثبت مشخص می‌شود)';
+    if (s.approver_type === 'requester_director') return 'مدیرِ واحد درخواست‌دهنده (هنگام ثبت مشخص می‌شود)';
     if (s.approver_type === 'user') {
       const u = users.find(x => x.id === Number(s.approver_id));
       return u ? u.full_name : '⚠️ کاربری انتخاب نشده';
+    }
+    if (s.approver_type === 'dept_head' || s.approver_type === 'dept_director') {
+      const d = departments.find(x => x.id === Number(s.approver_id));
+      const what = s.approver_type === 'dept_head' ? 'سرگروه' : 'مدیر';
+      return d ? `${what} واحد ${d.name}` : `${what} واحد (انتخاب نشده)`;
     }
     if (s.approver_type === 'dept_manager') {
       const d = departments.find(x => x.id === Number(s.approver_id));
@@ -211,6 +225,9 @@ function TemplateModal({ tpl, onClose, onDone }) {
     alt_approvers: parseAlts(s.alt_approvers),
     requires_signature: s.requires_signature === 0 ? 0 : 1,
     allow_attachments: s.allow_attachments === 0 ? 0 : 1, // [پیوست‌ها]
+    dynamic_approver: s.dynamic_approver ? 1 : 0,
+    dynamic_deadline: s.dynamic_deadline ? 1 : 0,
+    skippable_at_submit: s.skippable_at_submit ? 1 : 0,
   })) || [
     { title: 'تایید سرگروه واحد', approver_type: 'requester_manager', deadline_hours: 24, alt_approvers: [], requires_signature: 1, allow_attachments: 1 },
   ]);
@@ -227,6 +244,13 @@ function TemplateModal({ tpl, onClose, onDone }) {
   });
   // [مورد ۱] محدودهٔ واحدها ([] = همه‌جا)
   const [scopeDeptIds, setScopeDeptIds] = useState(() => { try { return JSON.parse(tpl?.scope_dept_ids || '[]'); } catch { return []; } });
+  // [مالکیت] واحدِ صاحبِ فرآیند — فقط سرگروه/مدیر همان واحد می‌تواند تغییرش دهد
+  const [ownerDeptId, setOwnerDeptId] = useState(tpl?.owner_dept_id || '');
+  // [ثبت به نمایندگی] اجازهٔ ثبت درخواست از طرفِ شخص دیگر
+  const [allowOnBehalf, setAllowOnBehalf] = useState(!!tpl?.allow_on_behalf);
+  // [رونوشت] ۰ خاموش | ۱ اختیاری | ۲ الزامی
+  const [ccMode, setCcMode] = useState(tpl?.cc_mode ?? 0);
+  const [ccAck, setCcAck] = useState(tpl ? tpl.cc_require_ack !== 0 : true);
   // [مورد ۳] مهلت کل تایید
   const [totalDeadline, setTotalDeadline] = useState(tpl?.total_deadline_hours || 0);
   // [مورد ۲] فایل‌های ضمیمهٔ فرآیند — عکس یا هر سند دیگر (آرایه‌ای از file id)
@@ -258,11 +282,15 @@ function TemplateModal({ tpl, onClose, onDone }) {
   const save = async () => {
     for (const s of steps) {
       if (!s.title.trim()) return toast('عنوان همه مراحل الزامی است', 'error');
-      if (s.approver_type === 'dept_manager' && !s.approver_id) return toast('برای مرحله «مدیر واحد» باید واحد را انتخاب کنید', 'error');
+      if (NEEDS_DEPT.includes(s.approver_type) && s.approver_type !== 'dept_member' && !s.approver_id) {
+        return toast(`برای مرحلهٔ «${APPROVER_TYPES[s.approver_type]}» باید واحد را انتخاب کنید`, 'error');
+      }
       if (s.approver_type === 'dept_member' && !s.approver_id) return toast('برای مرحله «عضو تیم» باید تیم/واحد را انتخاب کنید', 'error');
       if (s.approver_type === 'user' && !s.approver_id) return toast('برای مرحله «کاربر مشخص» باید کاربر را انتخاب کنید', 'error');
       for (const a of (s.alt_approvers || [])) {
-        if (a.approver_type === 'dept_manager' && !a.approver_id) return toast('برای جایگزین «مدیر واحد» باید واحد را انتخاب کنید', 'error');
+        if (NEEDS_DEPT.includes(a.approver_type) && a.approver_type !== 'dept_member' && !a.approver_id) {
+          return toast('برای جایگزینِ مبتنی بر واحد، باید واحد را انتخاب کنید', 'error');
+        }
         if (a.approver_type === 'dept_member' && !a.approver_id) return toast('برای جایگزین «عضو تیم» باید تیم/واحد را انتخاب کنید', 'error');
         if (a.approver_type === 'user' && !a.approver_id) return toast('برای جایگزین «کاربر مشخص» باید کاربر را انتخاب کنید', 'error');
       }
@@ -280,6 +308,10 @@ function TemplateModal({ tpl, onClose, onDone }) {
         leave_enabled: leaveOn,
         leave_map: leaveMap,
         scope_dept_ids: scopeDeptIds.map(Number),
+        owner_dept_id: ownerDeptId ? Number(ownerDeptId) : null,
+        allow_on_behalf: allowOnBehalf ? 1 : 0,
+        cc_mode: Number(ccMode) || 0,
+        cc_require_ack: ccAck ? 1 : 0,
         total_deadline_hours: Number(totalDeadline) || 0,
         attachments: attachments.map(Number),
         allow_attachments: allowAtt,
@@ -354,6 +386,45 @@ function TemplateModal({ tpl, onClose, onDone }) {
             { value: 1, label: 'مجاز', tone: 'primary', hint: 'افرادِ سلسله‌مراتب می‌توانند فایل پیوست کنند' },
             { value: 0, label: 'غیرمجاز', hint: 'در هیچ مرحله‌ای امکان پیوست نیست' },
           ]} />
+      </Field>
+
+      {/* [مالکیت] کدام واحد صاحبِ این فرآیند است — تعیین‌کنندهٔ اینکه چه کسی می‌تواند تغییرش دهد */}
+      <Field label="واحدِ صاحب فرآیند"
+        hint="فقط سرگروه یا مدیرِ همین واحد (و مدیر سامانه) می‌تواند این فرآیند را ویرایش یا حذف کند. این با «در دسترس برای کدام واحدها» فرق دارد: آن می‌گوید چه کسی درخواست بدهد، این می‌گوید چه کسی فرآیند را بسازد و دست بزند.">
+        <select className="input" value={ownerDeptId} onChange={e => setOwnerDeptId(e.target.value)}>
+          <option value="">— بدون صاحب (فقط مدیر سامانه) —</option>
+          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+      </Field>
+
+      {/* [ثبت به نمایندگی] */}
+      <Field label="ثبت به نمایندگی از شخص دیگر"
+        hint="مثلاً وقتی منشی برای مدیر درخواست می‌زند، یا برای همکاری که حساب کاربری ندارد. نامِ هر دو نفر (ثبت‌کننده و صاحبِ درخواست) ثبت و چاپ می‌شود.">
+        <Segmented size="sm" value={allowOnBehalf ? 1 : 0} onChange={v => setAllowOnBehalf(!!v)}
+          options={[
+            { value: 0, label: 'غیرفعال', hint: 'درخواست همیشه به نام ثبت‌کننده است' },
+            { value: 1, label: 'فعال', tone: 'primary', hint: 'کاربر می‌تواند بگوید درخواست از طرف چه کسی است' },
+          ]} />
+      </Field>
+
+      {/* [رونوشت] */}
+      <Field label="رونوشت (افرادی که فقط در جریان قرار می‌گیرند)"
+        hint="گیرندهٔ رونوشت تاییدکننده نیست؛ فقط نامه را می‌بیند. اگر «دریافت شد» را الزامی کنید، درخواست‌دهنده می‌بیند چه کسی هنوز تایید دریافت نکرده است.">
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Segmented size="sm" value={Number(ccMode)} onChange={v => setCcMode(v)}
+            options={[
+              { value: 0, label: 'ندارد' },
+              { value: 1, label: 'اختیاری', tone: 'primary' },
+              { value: 2, label: 'الزامی', hint: 'حداقل یک گیرندهٔ رونوشت باید انتخاب شود' },
+            ]} />
+          {Number(ccMode) > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, cursor: 'pointer' }}>
+              <input type="checkbox" checked={ccAck} style={{ width: 15, height: 15 }}
+                onChange={e => setCcAck(e.target.checked)} />
+              گیرندگان «دریافت شد» بزنند
+            </label>
+          )}
+        </div>
       </Field>
 
       {/* [مورد ۱] محدودهٔ واحدهایی که این فرآیند برایشان در دسترس است */}
@@ -542,6 +613,37 @@ function TemplateModal({ tpl, onClose, onDone }) {
                 { value: 0, label: 'درج نشود' },
               ]} />
           </div>
+          {/* [مسیر پویا] مرحله‌هایی که هر بار فرق می‌کنند — خواستهٔ واحد برنامه‌ریزی:
+              یک فرآیند، ولی تاییدکننده و مهلت و حتی بودن/نبودنِ مرحله در هر درخواست متفاوت */}
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
+            <div style={{ fontSize: 12.3, fontWeight: 700, color: 'var(--text-2)', marginBottom: 7 }}>
+              این مرحله در هر درخواست فرق می‌کند؟
+            </div>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!s.dynamic_approver} style={{ width: 15, height: 15 }}
+                  onChange={e => setStep(i, { dynamic_approver: e.target.checked ? 1 : 0 })} />
+                تاییدکننده هنگام ثبت انتخاب شود
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!s.dynamic_deadline} style={{ width: 15, height: 15 }}
+                  onChange={e => setStep(i, { dynamic_deadline: e.target.checked ? 1 : 0 })} />
+                مهلت هنگام ثبت تعیین شود
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!s.skippable_at_submit} style={{ width: 15, height: 15 }}
+                  onChange={e => setStep(i, { skippable_at_submit: e.target.checked ? 1 : 0 })} />
+                درخواست‌دهنده بتواند این مرحله را حذف کند
+              </label>
+            </div>
+            {(s.dynamic_approver || s.dynamic_deadline || s.skippable_at_submit) && (
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 6, lineHeight: 1.8 }}>
+                مقادیرِ بالا پیش‌فرض می‌شوند و کاربر هنگام ثبت می‌تواند عوضشان کند.
+                مسیرِ انتخاب‌شده برای همان درخواست ثبت می‌شود و تغییرِ بعدیِ فرآیند به آن دست نمی‌زند.
+              </div>
+            )}
+          </div>
+
           {/* [مورد ۴] کنترل نوتیفیکیشن این مرحله */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12.3, color: 'var(--text-2)' }}>ارسال نوتیفیکیشن به تاییدکنندهٔ این مرحله:</span>

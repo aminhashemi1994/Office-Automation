@@ -150,6 +150,37 @@ export default function Leaves() {
               )}
             </div>
           </div>
+
+          {/* [دو کیسه] موجودی قبلی اول خرج می‌شود، بعد سهمیهٔ امسال —
+              تا کسی نگران نباشد که مرخصیِ سال‌های قبلش سوخته است */}
+          {mine.carried_over_hours > 0 && (
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border-soft)' }}>
+              <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginBottom: 10 }}>
+                ترتیب مصرف: <b>اول موجودی قبلی</b>، بعد سهمیهٔ امسال.
+              </div>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                {[
+                  ['موجودی از قبل', mine.legacy_remaining_hours, mine.carried_over_hours, 'var(--chart-b)'],
+                  ['سهمیهٔ امسال', mine.year_remaining_hours, mine.entitled_hours, 'var(--chart-a)'],
+                ].map(([label, left, total, color]) => (
+                  <div key={label} style={{ flex: 1, minWidth: 210 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 5 }}>
+                      <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>{label}</span>
+                      <b style={{ fontSize: 13.5, color }}>{hoursLabel(Math.max(0, left), wd)}</b>
+                      <small style={{ color: 'var(--text-3)' }}>از {hoursLabel(total, wd)}</small>
+                    </div>
+                    <div style={{ height: 8, borderRadius: 99, background: 'var(--border-soft)', overflow: 'hidden' }}>
+                      <div style={{ width: `${total > 0 ? Math.max(0, Math.min(100, (left / total) * 100)) : 0}%`,
+                        height: '100%', background: color }} />
+                    </div>
+                    {left <= 0 && total > 0 && (
+                      <small style={{ color: 'var(--text-3)' }}>تمام شده است</small>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -272,7 +303,14 @@ export default function Leaves() {
                   </td>
                   <td style={{ fontSize: 12.5 }}>{b.department_name || '—'}</td>
                   <td style={{ fontSize: 12.5 }}>{hoursLabel(b.entitled_hours, wd)}</td>
-                  <td style={{ fontSize: 12.5 }}>{b.carried_over_hours ? hoursLabel(b.carried_over_hours, wd) : '—'}</td>
+                  <td style={{ fontSize: 12.5 }}>
+                    {b.carried_over_hours ? (
+                      <span title="ماندهٔ موجودی قبلی / کلِ موجودی قبلی">
+                        {hoursLabel(Math.max(0, b.legacy_remaining_hours ?? b.carried_over_hours), wd)}
+                        <span style={{ color: 'var(--text-3)' }}> از {hoursLabel(b.carried_over_hours, wd)}</span>
+                      </span>
+                    ) : '—'}
+                  </td>
                   <td style={{ fontSize: 12.5 }}>{b.entitled_used ? hoursLabel(b.entitled_used, wd) : '—'}</td>
                   <td style={{ fontSize: 12.5 }}>{b.unpaid_used ? hoursLabel(b.unpaid_used, wd) : '—'}</td>
                   <td style={{ fontSize: 12.5 }}>{b.sick_used ? hoursLabel(b.sick_used, wd) : '—'}</td>
@@ -396,7 +434,8 @@ function LimitModal({ value, setValue, onDone }) {
             onChange={e => setValue(v => ({ ...v, sick_days: e.target.value }))} />
         </Field>
       </div>
-      <Field label="ماندهٔ منتقل‌شده از سال قبل (روز)">
+      <Field label="موجودی مرخصی از قبل (روز)"
+        hint="مرخصیِ مانده از سال‌های گذشته یا از سامانهٔ قبلی. این مقدار اول خرج می‌شود و تا تمام نشود، از سقف امسال چیزی کم نمی‌گردد. ثبت گروهیِ «سقف برای همه» به این عدد دست نمی‌زند.">
         <input className="input" type="number" step="0.5" value={value.carried_over_days}
           onChange={e => setValue(v => ({ ...v, carried_over_days: e.target.value }))} />
       </Field>

@@ -1,7 +1,8 @@
 import db from './db.js';
 import { notifyUser, notifyUsers } from './notify.js';
-import { resolveApprovers } from './routes/workflows.js';
+import { resolveApprovers, currentStepOfRequest } from './routes/workflows.js';
 import { flushQueue } from './sms.js';
+import { notifyAudience } from './routes/announcements.js';
 
 const HOUR = 3600 * 1000;
 
@@ -18,8 +19,9 @@ function checkWorkflowDeadlines() {
     const nearDeadline = due - now < 4 * HOUR && due > now;
     const overdue = now > due;
     if ((nearDeadline || overdue) && now - lastReminded > 12 * HOUR) {
-      const step = db.prepare('SELECT * FROM workflow_steps WHERE template_id = ? AND step_order = ?')
-        .get(rq.template_id, rq.current_step);
+      // مرحلهٔ جاری باید از «نسخهٔ اختصاصیِ درخواست» خوانده شود (مسیر پویا)، نه از فرآیند؛
+      // وگرنه روی درخواستی که مسیرش سفارشی شده، مرحلهٔ اشتباه یا هیچ مرحله‌ای پیدا نمی‌شود.
+      const step = currentStepOfRequest(rq);
       if (!step) continue;
       if (step.notify_approver === 0) { // [مورد ۴] اعلان این مرحله خاموش است
         db.prepare("UPDATE workflow_requests SET last_reminded_at = datetime('now') WHERE id = ?").run(rq.id);
@@ -114,6 +116,21 @@ function checkTaskAndStepReminders() {
       link: `/tasks?task=${s.tid}`,
     });
     db.prepare('UPDATE task_steps SET reminded = 1 WHERE id = ?').run(s.id);
+  }
+}
+
+// اطلاعیه‌های زمان‌بندی‌شده: وقتی زمانشان رسید، اعلانشان یک‌بار فرستاده می‌شود.
+// ستون publish_at بعد از ارسال خالی می‌شود تا دوباره اعلام نشود.
+function checkScheduledAnnouncements() {
+  const due = db.prepare(`SELECT * FROM announcements
+    WHERE is_active = 1 AND publish_at IS NOT NULL AND publish_at != ''
+      AND datetime(publish_at) <= datetime('now')
+      AND (expires_at IS NULL OR expires_at = '' OR datetime(expires_at) >= datetime('now'))`).all();
+  for (const a of due) {
+    try {
+      notifyAudience(a, null);
+      db.prepare("UPDATE announcements SET publish_at = '' WHERE id = ?").run(a.id);
+    } catch (e) { console.error('announcement notify error:', e.message); }
   }
 }
 
@@ -256,7 +273,7 @@ function checkTicketDeadlines() {
 
 export function startReminderEngine() {
   const tick = () => {
-    try { checkWorkflowDeadlines(); checkTaskDeadlines(); checkNoteReminders(); checkTaskAndStepReminders(); }
+    try { checkWorkflowDeadlines(); checkTaskDeadlines(); checkNoteReminders(); checkTaskAndStepReminders(); checkScheduledAnnouncements(); }
     catch (e) { console.error('reminder engine error:', e); }
     // خطای CRM نباید یادآوری‌های اصلی سامانه را متوقف کند
     try { checkCrmFollowUps(); checkTenderDeadlines(); checkTicketDeadlines(); }

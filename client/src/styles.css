@@ -751,3 +751,40 @@ select.input option { background: var(--surface); color: var(--text); }
 }
 .support-history:hover { background: var(--border-soft); }
 .support-foot { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border-soft); align-items: flex-end; }
+
+/* ---------- نمودار درختی گردش کار ---------- */
+.wf-tree { display: flex; flex-direction: column; }
+.wf-node-wrap { display: flex; flex-direction: column; }
+.wf-link {
+  width: 2px; height: 18px; margin-inline-start: 17px;
+  background: var(--border); border-radius: 2px;
+}
+.wf-link.passed { background: var(--green); }
+.wf-node {
+  display: flex; gap: 11px; align-items: flex-start; width: 100%; text-align: right;
+  background: var(--bg-2); border: 1.5px solid var(--border-soft); border-radius: 12px;
+  padding: 10px 12px; cursor: pointer; font-family: inherit;
+}
+.wf-node:hover { border-color: var(--primary); }
+.wf-node.current { border-color: var(--primary); background: var(--primary-soft); }
+.wf-node.done { border-color: var(--green); }
+.wf-node.rejected { border-color: var(--red); background: var(--red-soft); }
+.wf-dot {
+  width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12.5px; font-weight: 700;
+  background: var(--bg-1); border: 1.5px solid var(--border); color: var(--text-2);
+}
+.wf-node.done .wf-dot { background: var(--green); border-color: var(--green); color: #fff; }
+.wf-node.current .wf-dot { background: var(--primary); border-color: var(--primary); color: #fff; }
+.wf-node.rejected .wf-dot { background: var(--red); border-color: var(--red); color: #fff; }
+.wf-body { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.wf-title { font-size: 13.5px; font-weight: 600; color: var(--text-1); }
+.wf-people { font-size: 12px; color: var(--text-2); }
+.wf-meta { font-size: 11.3px; color: var(--text-3); display: flex; gap: 5px; flex-wrap: wrap; }
+.wf-state { font-weight: 700; }
+.wf-state.done { color: var(--green); }
+.wf-state.current { color: var(--primary); }
+.wf-state.rejected { color: var(--red); }
+.wf-flags { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; flex-shrink: 0; }
+/* گرهٔ انتخاب‌شدهٔ نمودار — تاریخچه روی همین مرحله فیلتر شده است */
+.wf-node.picked { outline: 2px solid var(--primary); outline-offset: 1px; }

@@ -68,14 +68,30 @@ export function balanceOf(userId, year = currentJalaliYear()) {
     (policy.entitled ? Number(used.entitled_used) : 0) +
     (policy.unpaid ? Number(used.unpaid_used) : 0) +
     (policy.sick ? Number(used.sick_used) : 0);
+  // ------------------------------------------------------------------
+  //  ترتیب مصرف: اول «موجودی قبلی»، بعد سهمیهٔ امسال.
+  //  خواستهٔ کاربران این بود که مرخصیِ مانده از قبل اول خرج شود و سهمیهٔ
+  //  تازه (مثلاً ۱۵ روز) دست‌نخورده بماند تا وقتی موجودی قبلی تمام شود.
+  //  محاسبه روی مجموع انجام می‌شود، پس هیچ ستون تازه‌ای لازم ندارد و
+  //  رکوردهای قدیمیِ کسر هم درست تفسیر می‌شوند.
+  // ------------------------------------------------------------------
+  const legacy = Number(row?.carried_over_hours || 0);
+  const thisYear = Number(row?.entitled_hours || 0);
+  const legacyUsed = Math.min(legacy, deducted);
+  const entitledUsedFromYear = Math.max(0, deducted - legacy);
   return {
     year,
-    entitled_hours: Number(row?.entitled_hours || 0),
-    carried_over_hours: Number(row?.carried_over_hours || 0),
+    entitled_hours: thisYear,
+    carried_over_hours: legacy,
     sick_hours: Number(row?.sick_hours || 0),
     total_hours: entitled,
     used_hours: deducted,
     remaining_hours: entitled - deducted,
+    // تفکیکِ دو کیسه — رابط کاربری هر دو را جدا نشان می‌دهد
+    legacy_used_hours: legacyUsed,
+    legacy_remaining_hours: legacy - legacyUsed,
+    year_used_hours: entitledUsedFromYear,
+    year_remaining_hours: Math.max(0, thisYear - entitledUsedFromYear),
     entitled_used: Number(used.entitled_used),
     unpaid_used: Number(used.unpaid_used),
     sick_used: Number(used.sick_used),
@@ -138,15 +154,24 @@ r.put('/balances/:userId', (req, res) => {
   // مقدار را می‌توان به «روز» یا مستقیماً به «ساعت» فرستاد
   const hours = (v, days) => (v !== undefined && v !== null && v !== '' ? Number(v) || 0
     : days !== undefined && days !== null && days !== '' ? (Number(days) || 0) * wd : 0);
-  const entitled = hours(req.body?.entitled_hours, req.body?.entitled_days);
-  const sick = hours(req.body?.sick_hours, req.body?.sick_days);
-  const carried = hours(req.body?.carried_over_hours, req.body?.carried_over_days);
+  // فقط فیلدهایی که واقعاً فرستاده شده‌اند تغییر می‌کنند. پیش از این، ویرایشِ
+  // «موجودی قبلی» به‌تنهایی سقف سالانه را صفر می‌کرد — چون فیلدِ نفرستاده ۰ خوانده می‌شد.
+  const prev = db.prepare('SELECT * FROM leave_balances WHERE user_id = ? AND year = ?').get(uid, year) || {};
+  const sent = (h, d) => (req.body?.[h] !== undefined && req.body?.[h] !== '')
+    || (req.body?.[d] !== undefined && req.body?.[d] !== '');
+  const entitled = sent('entitled_hours', 'entitled_days')
+    ? hours(req.body?.entitled_hours, req.body?.entitled_days) : Number(prev.entitled_hours || 0);
+  const sick = sent('sick_hours', 'sick_days')
+    ? hours(req.body?.sick_hours, req.body?.sick_days) : Number(prev.sick_hours || 0);
+  const carried = sent('carried_over_hours', 'carried_over_days')
+    ? hours(req.body?.carried_over_hours, req.body?.carried_over_days) : Number(prev.carried_over_hours || 0);
+  const note = req.body?.note !== undefined ? String(req.body.note) : String(prev.note || '');
   db.prepare(`INSERT INTO leave_balances (user_id, year, entitled_hours, sick_hours, carried_over_hours, note, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(user_id, year) DO UPDATE SET
       entitled_hours = excluded.entitled_hours, sick_hours = excluded.sick_hours,
       carried_over_hours = excluded.carried_over_hours, note = excluded.note, updated_at = datetime('now')`)
-    .run(uid, year, entitled, sick, carried, String(req.body?.note || ''));
+    .run(uid, year, entitled, sick, carried, note);
   res.json({ ok: true, balance: balanceOf(uid, year) });
 });
 
@@ -166,6 +191,8 @@ r.post('/balances/bulk', (req, res) => {
   const users = deptId
     ? db.prepare('SELECT id FROM users WHERE is_active = 1 AND department_id = ?').all(deptId)
     : db.prepare('SELECT id FROM users WHERE is_active = 1').all();
+  // «موجودی قبلی» عمداً در ثبتِ گروهی دست نمی‌خورد: آن عددِ شخصیِ هر نفر است و
+  // با یک‌بار زدنِ «سقف ۱۵ روز برای همه» نباید پاک شود.
   const ins = db.prepare(`INSERT INTO leave_balances (user_id, year, entitled_hours, sick_hours, updated_at)
     VALUES (?, ?, ?, ?, datetime('now'))
     ON CONFLICT(user_id, year) DO UPDATE SET

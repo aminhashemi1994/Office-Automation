@@ -7,6 +7,7 @@ import bcrypt from 'bcryptjs';
 import db from '../db.js';
 import { requirePerm, hasPerm } from '../auth.js';
 import { notifyUsers } from '../notify.js';
+import { deptHeads, deptDirectors } from '../acl.js';
 import { AVATARS_DIR, SIGNATURES_DIR, SOUNDS_DIR } from '../config.js';
 
 const r = Router();
@@ -166,6 +167,10 @@ r.post('/users', requirePerm('users.manage'), (req, res) => {
   if (db.prepare('SELECT id FROM users WHERE username = ?').get(username)) {
     return res.status(400).json({ error: 'این نام کاربری قبلاً ثبت شده است' });
   }
+  // واحدِ ناموجود باید پیام روشن بدهد، نه خطای پایگاه‌داده
+  if (department_id && !db.prepare('SELECT 1 FROM departments WHERE id = ?').get(Number(department_id))) {
+    return res.status(400).json({ error: 'واحد انتخاب‌شده معتبر نیست' });
+  }
   const color = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
   const result = db.prepare(`INSERT INTO users (username, password_hash, full_name, role, department_id, position, phone, email, avatar_color, permissions)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -257,16 +262,23 @@ r.delete('/password-resets/:id', requirePerm('users.manage'), (req, res) => {
 });
 
 // ---------- departments ----------
+const nameOf = (id) => db.prepare(`SELECT u.id, u.full_name, u.avatar_color,
+    u.position AS job_title, d.name AS department_name
+  FROM users u LEFT JOIN departments d ON d.id = u.department_id WHERE u.id = ?`).get(id) || { id, full_name: '—' };
+
 r.get('/departments', (req, res) => {
   const departments = db.prepare(`
     SELECT d.*, m.full_name AS manager_name,
       (SELECT COUNT(*) FROM users u WHERE u.department_id = d.id AND u.is_active = 1) AS member_count
     FROM departments d LEFT JOIN users m ON m.id = d.manager_id
     ORDER BY d.id`).all();
-  // فهرست کاملِ مدیرانِ هر واحد (چندمدیره)
-  const mgrs = db.prepare(`SELECT dm.user_id AS id, u.full_name FROM department_managers dm
-    JOIN users u ON u.id = dm.user_id WHERE dm.department_id = ? AND u.is_active = 1`);
-  for (const d of departments) d.managers = mgrs.all(d.id);
+  // سرگروه‌ها و مدیرانِ هر واحد، جدا از هم. یک نفر می‌تواند در هر دو فهرست باشد.
+  for (const d of departments) {
+    d.heads = deptHeads(d.id).map(id => nameOf(id));
+    d.directors = deptDirectors(d.id).map(id => nameOf(id));
+    // سازگاری با نسخه‌های قبلِ رابط کاربری
+    d.managers = [...d.heads, ...d.directors].filter((x, i, arr) => arr.findIndex(y => y.id === x.id) === i);
+  }
   res.json({ departments });
 });
 
@@ -294,6 +306,44 @@ r.put('/departments/:id', requirePerm('departments.manage'), (req, res) => {
   // مدیر اصلیِ جدید را به جدول چندمدیره هم اضافه کن
   if (manager_id) db.prepare('INSERT OR IGNORE INTO department_managers (department_id, user_id) VALUES (?, ?)').run(d.id, manager_id);
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+//  سِمَت‌های واحد: سرگروه و مدیر
+//  تا امروز هر دو یک چیز بودند و در گردش‌کار قابل تفکیک نبودند. حالا هر واحد
+//  می‌تواند چند سرگروه و چند مدیر داشته باشد و یک نفر هم می‌تواند هر دو سِمَت را
+//  هم‌زمان داشته باشد (که در عمل هم پیش می‌آید).
+// ---------------------------------------------------------------------------
+r.get('/departments/:id/positions', (req, res) => {
+  const d = db.prepare('SELECT * FROM departments WHERE id = ?').get(req.params.id);
+  if (!d) return res.status(404).json({ error: 'واحد یافت نشد' });
+  res.json({
+    heads: deptHeads(d.id).map(nameOf),
+    directors: deptDirectors(d.id).map(nameOf),
+  });
+});
+
+r.post('/departments/:id/positions', requirePerm('departments.manage'), (req, res) => {
+  const d = db.prepare('SELECT * FROM departments WHERE id = ?').get(req.params.id);
+  if (!d) return res.status(404).json({ error: 'واحد یافت نشد' });
+  const clean = (list) => [...new Set((Array.isArray(list) ? list : []).map(Number).filter(Boolean))]
+    .filter(id => db.prepare('SELECT 1 FROM users WHERE id = ? AND is_active = 1').get(id));
+  const heads = clean(req.body?.head_ids);
+  const directors = clean(req.body?.director_ids);
+
+  db.prepare('DELETE FROM department_managers WHERE department_id = ?').run(d.id);
+  const ins = db.prepare('INSERT OR IGNORE INTO department_managers (department_id, user_id, position) VALUES (?, ?, ?)');
+  for (const id of heads) ins.run(d.id, id, 'head');
+  for (const id of directors) ins.run(d.id, id, 'director');
+  // «مدیر اصلی» همان اولین مدیر است تا گزارش‌ها و چاپ‌های قدیمی درست بمانند
+  db.prepare('UPDATE departments SET manager_id = ? WHERE id = ?').run(directors[0] || heads[0] || null, d.id);
+  // اگر کسی سرگروهِ ثبت‌شده است اما نقش کاربری‌اش «کارمند» مانده، دیگر لازم نیست
+  // نقشش را دستی عوض کنند؛ سِمَتِ واحد خودش دسترسی مدیریتی می‌دهد.
+  res.json({
+    ok: true,
+    heads: deptHeads(d.id).map(nameOf),
+    directors: deptDirectors(d.id).map(nameOf),
+  });
 });
 
 r.delete('/departments/:id', requirePerm('departments.manage'), (req, res) => {

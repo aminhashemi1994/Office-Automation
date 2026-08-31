@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Plus, Pencil, Trash2, Crown, Search } from 'lucide-react';
+import { Plus, Pencil, Trash2, Crown, Search, UserCog, AlertTriangle, X } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
-import { Modal, Field, UserPicker, Segmented } from '../components/common.jsx';
+import { Modal, Field, Segmented } from '../components/common.jsx';
 import { fa } from '../utils.js';
 
 export default function Departments() {
@@ -44,11 +44,22 @@ export default function Departments() {
             {d.description && <p style={{ fontSize: 12.8, color: 'var(--text-2)', marginBottom: 10 }}>{d.description}</p>}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {!!d.is_management && <span className="badge badge-red">واحد مدیریت</span>}
-              {(d.managers && d.managers.length)
-                ? d.managers.map(m => (
-                  <span key={m.id} className="badge badge-amber"><Crown size={12} /> {m.full_name}</span>
-                ))
-                : <span className="badge badge-amber"><Crown size={12} /> بدون سرگروه</span>}
+              {(d.directors || []).map(m => (
+                <span key={`dir${m.id}`} className="badge badge-red" title="مدیر واحد">
+                  <Crown size={12} /> مدیر: {m.full_name}
+                </span>
+              ))}
+              {(d.heads || []).map(m => (
+                <span key={`h${m.id}`} className="badge badge-amber" title="سرگروه واحد">
+                  <UserCog size={12} /> سرگروه: {m.full_name}
+                </span>
+              ))}
+              {/* بدونِ مسئول یعنی درخواست‌های این واحد روی میز کسی نمی‌نشیند — باید تو چشم بزند */}
+              {!(d.directors || []).length && !(d.heads || []).length && (
+                <span className="badge badge-red" title="درخواست‌های این واحد به مدیر سامانه می‌روند">
+                  <AlertTriangle size={12} /> سرگروه/مدیر ندارد
+                </span>
+              )}
               <span className="badge badge-gray">{fa(d.member_count)} عضو</span>
             </div>
           </div>
@@ -63,24 +74,55 @@ export default function Departments() {
   );
 }
 
+// انتخابگرِ چندنفره برای یک سِمَت. عمداً بیرون از کامپوننتِ مودال تعریف شده تا با
+// هر تایپ در فیلدهای دیگر، از نو ساخته نشود.
+function PositionPicker({ value, onChange, hint, users }) {
+  return (
+    <>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        {value.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>کسی انتخاب نشده است.</span>}
+        {value.map(id => (
+          <span key={id} className="badge badge-sky" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            {users.find(u => u.id === id)?.full_name || '—'}
+            <X size={12} style={{ cursor: 'pointer' }} onClick={() => onChange(value.filter(x => x !== id))} />
+          </span>
+        ))}
+      </div>
+      <select className="input" value="" onChange={e => {
+        const id = Number(e.target.value);
+        if (id && !value.includes(id)) onChange([...value, id]);
+      }}>
+        <option value="">+ افزودن…</option>
+        {users.filter(u => u.is_active && !value.includes(u.id))
+          .map(u => <option key={u.id} value={u.id}>{u.full_name}{u.department_name ? ` (${u.department_name})` : ''}</option>)}
+      </select>
+      {hint && <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 5, lineHeight: 1.75 }}>{hint}</div>}
+    </>
+  );
+}
+
 function DeptModal({ dept, onClose, onDone }) {
-  const { toast } = useStore();
+  const { toast, users } = useStore();
   const [name, setName] = useState(dept?.name || '');
   const [description, setDescription] = useState(dept?.description || '');
-  const [manager, setManager] = useState(dept?.manager_id || null);
   const [isManagement, setIsManagement] = useState(!!dept?.is_management);
+  // سرگروه و مدیر، دو سِمَتِ جدا. یک نفر می‌تواند در هر دو فهرست باشد.
+  const [heads, setHeads] = useState(() => (dept?.heads || []).map(m => m.id));
+  const [directors, setDirectors] = useState(() => (dept?.directors || []).map(m => m.id));
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
     setBusy(true);
     try {
-      const body = { name, description, manager_id: manager, is_management: isManagement };
+      const body = { name, description, is_management: isManagement };
+      const id = dept ? dept.id : (await api('/departments', { method: 'POST', body })).id;
       if (dept) await api(`/departments/${dept.id}`, { method: 'PUT', body });
-      else await api('/departments', { method: 'POST', body });
+      await api(`/departments/${id}/positions`, { method: 'POST', body: { head_ids: heads, director_ids: directors } });
       onDone();
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
   };
+
 
   return (
     <Modal title={dept ? `ویرایش ${dept.name}` : 'واحد جدید'} onClose={onClose}
@@ -90,7 +132,14 @@ function DeptModal({ dept, onClose, onDone }) {
       </>}>
       <Field label="نام واحد"><input className="input" value={name} onChange={e => setName(e.target.value)} autoFocus /></Field>
       <Field label="توضیحات"><textarea className="input" value={description} onChange={e => setDescription(e.target.value)} /></Field>
-      <Field label="سرگروه / مدیر واحد"><UserPicker value={manager} onChange={setManager} /></Field>
+      <Field label="سرگروهِ واحد">
+        <PositionPicker value={heads} onChange={setHeads} users={users}
+          hint="سرگروه، سطح اولِ تایید است. در تعریف فرآیند می‌توانید مرحله‌ای بگذارید که فقط سرگروه تایید کند." />
+      </Field>
+      <Field label="مدیرِ واحد">
+        <PositionPicker value={directors} onChange={setDirectors} users={users}
+          hint="مدیر بالادستِ سرگروه است. یک نفر می‌تواند هم‌زمان سرگروه و مدیر باشد — کافی است در هر دو فهرست بیاید." />
+      </Field>
       <Field label="نوع واحد">
         <Segmented value={isManagement ? 1 : 0} onChange={v => setIsManagement(!!v)}
           options={[

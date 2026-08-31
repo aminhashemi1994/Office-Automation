@@ -4,7 +4,7 @@ import {
   LayoutDashboard, MessageSquare, Inbox, ListTodo, Users as UsersIcon, Building2,
   GitBranch, Bell, LogOut, Cable, UserCircle, CheckCheck, BarChart3, Video, Sun, Moon, Trash2, SlidersHorizontal,
   Send, MessageSquare as MessageSquareIcon, Menu, StickyNote, Handshake, CalendarDays,
-  FolderKanban, Activity, Contact, Mail, CalendarClock, AlertTriangle, ListChecks, Clock,
+  FolderKanban, Activity, Contact, Mail, CalendarClock, AlertTriangle, ListChecks, Clock, Megaphone,
 } from 'lucide-react';
 import { useStore } from './store.jsx';
 import { api } from './api.js';
@@ -28,6 +28,8 @@ import Profile from './pages/Profile.jsx';
 import Notes from './pages/Notes.jsx';
 import Projects from './pages/Projects.jsx';
 import Colleagues from './pages/Colleagues.jsx';
+import Announcements from './pages/Announcements.jsx';
+import Letters from './pages/Letters.jsx';
 // مانیتورینگ نمودار دارد و همه هر روز بازش نمی‌کنند — جدا بارگذاری می‌شود
 const Monitoring = lazy(() => import('./pages/Monitoring.jsx'));
 // CRM و مرخصی سنگین‌اند و همهٔ کاربران بازشان نمی‌کنند —
@@ -274,6 +276,7 @@ const TITLES = {
   '/reports': 'گزارش‌گیری', '/recordings': 'ضبط جلسات و تماس‌ها', '/settings': 'تنظیمات سازمان', '/profile': 'پروفایل',
   '/notes': 'یادداشت‌ها و یادآوری‌ها', '/projects': 'پروژه‌ها و دسته‌بندی کارها',
   '/monitoring': 'مانیتورینگ عملکرد', '/colleagues': 'همکارانم',
+  '/announcements': 'اطلاعیه‌ها', '/letters': 'دبیرخانه — نامه‌ها',
 };
 
 const fmtBadge = (n) => (n > 99 ? '۹۹+' : Number(n).toLocaleString('fa-IR'));
@@ -282,11 +285,25 @@ function Layout({ children }) {
   const { user, logout, unreadNotifs, hasPerm, departments, settings, theme, toggleTheme, cartableCount, taskCount, taskCommentCount, chatUnread } = useStore();
   const [notifOpen, setNotifOpen] = useState(false);
   const [agendaOpen, setAgendaOpen] = useState(false);
+  // نشانِ کنار منو: اطلاعیهٔ نخوانده و نامهٔ نیازمند اقدام
+  const [announcementUnread, setAnnouncementUnread] = useState(0);
+  const [letterPending, setLetterPending] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const notifRef = useRef(null);
   const agendaRef = useRef(null);
   const location = useLocation();
   useEffect(() => { setNotifOpen(false); setAgendaOpen(false); setDrawerOpen(false); }, [location.pathname]);
+
+  // شمارنده‌ها با هر اعلان و هر جابه‌جایی صفحه تازه می‌شوند
+  useEffect(() => {
+    const refresh = () => {
+      api('/announcements').then(r => setAnnouncementUnread(r.unread || 0)).catch(() => {});
+      api('/letters?mine=1').then(r => setLetterPending(r.pending || 0)).catch(() => {});
+    };
+    refresh();
+    const id = setInterval(refresh, 120000);
+    return () => clearInterval(id);
+  }, [location.pathname]);
 
   // بستن پنل اعلان‌ها با کلیک بیرون از آن
   useEffect(() => {
@@ -337,19 +354,15 @@ function Layout({ children }) {
           </div>
         </div>
         <nav className="nav">
-          <div className="nav-label">اصلی</div>
+          {/* منو در چهار دستهٔ کوتاه — فهرستِ ۱۳تاییِ صاف، پیداکردنِ گزینه را سخت کرده بود */}
+          <div className="nav-label">کارهای من</div>
           <NavLink to="/" end className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><LayoutDashboard size={19} /><span>داشبورد</span></NavLink>
-          <NavLink to="/chat" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <MessageSquare size={19} /><span>گفتگوها</span>
-            {/* نشانِ پیام نخوانده — بدون بازکردن گفتگو هم مشخص است که پیام دارید */}
-            {chatUnread > 0 && <span className="badge-count nav-badge">{fmtBadge(chatUnread)}</span>}
-          </NavLink>
           <NavLink to="/cartable" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
             <Inbox size={19} /><span>کارتابل</span>
             {cartableCount > 0 && <span className="badge-count nav-badge">{fmtBadge(cartableCount)}</span>}
           </NavLink>
           <NavLink to="/tasks" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <ListTodo size={19} /><span>تسک‌ها</span>
+            <ListTodo size={19} /><span>وظایف</span>
             <span style={{ marginInlineStart: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               {taskCommentCount > 0 && (
                 <span className="badge-count" title="کامنت‌های خوانده‌نشده"
@@ -360,21 +373,32 @@ function Layout({ children }) {
               {taskCount > 0 && <span className="badge-count">{fmtBadge(taskCount)}</span>}
             </span>
           </NavLink>
-          {/* «نامه‌ها» همان درخواست‌های گردش‌کارند؛ کاربران با این نام سراغشان می‌آیند */}
-          <NavLink to="/cartable" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Mail size={19} /><span>نامه‌ها</span>
+          <NavLink to="/leaves" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><CalendarDays size={19} /><span>مرخصی</span></NavLink>
+
+          <div className="nav-label">ارتباطات</div>
+          <NavLink to="/chat" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            <MessageSquare size={19} /><span>گفتگوها</span>
+            {/* نشانِ پیام نخوانده — بدون بازکردن گفتگو هم مشخص است که پیام دارید */}
+            {chatUnread > 0 && <span className="badge-count nav-badge">{fmtBadge(chatUnread)}</span>}
           </NavLink>
+          <NavLink to="/announcements" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            <Megaphone size={19} /><span>اطلاعیه‌ها</span>
+            {announcementUnread > 0 && <span className="badge-count nav-badge">{fmtBadge(announcementUnread)}</span>}
+          </NavLink>
+          <NavLink to="/letters" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            <Mail size={19} /><span>دبیرخانه</span>
+            {letterPending > 0 && <span className="badge-count nav-badge">{fmtBadge(letterPending)}</span>}
+          </NavLink>
+          <NavLink to="/colleagues" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><Contact size={19} /><span>همکارانم</span></NavLink>
+
+          <div className="nav-label">برنامه‌ریزی</div>
           <NavLink to="/projects" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><FolderKanban size={19} /><span>پروژه‌ها</span></NavLink>
           <NavLink to="/notes" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><StickyNote size={19} /><span>یادداشت‌ها</span></NavLink>
           <NavLink to="/monitoring" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><Activity size={19} /><span>مانیتورینگ</span></NavLink>
-          <NavLink to="/colleagues" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><Contact size={19} /><span>همکارانم</span></NavLink>
-          {/* [مرخصی] ماندهٔ مرخصیِ خودم را همیشه می‌بینم؛ مدیران، ماندهٔ پرسنل را */}
-          <NavLink to="/leaves" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><CalendarDays size={19} /><span>مرخصی</span></NavLink>
           {/* [CRM] فقط واحدهایی که در تنظیمات سازمان مجاز شده‌اند */}
           {canUseCrm && (
-            <NavLink to="/crm" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><Handshake size={19} /><span>CRM — مشتریان</span></NavLink>
+            <NavLink to="/crm" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><Handshake size={19} /><span>مشتریان و فروش</span></NavLink>
           )}
-          <NavLink to="/profile" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><UserCircle size={19} /><span>پروفایل من</span></NavLink>
           {(hasPerm('users.manage') || hasPerm('departments.manage') || canBuildWorkflows || canViewReports || canViewRecordings || hasPerm('settings.manage')) && (
             <div className="nav-label">مدیریت سامانه</div>
           )}
@@ -397,10 +421,15 @@ function Layout({ children }) {
             <NavLink to="/settings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><SlidersHorizontal size={19} /><span>تنظیمات سازمان</span></NavLink>
           )}
         </nav>
+        {/* پروفایل من — همین‌جا در پایین منو، به‌جای یک ردیفِ تکراری در فهرست بالا */}
         <div className="sidebar-footer">
-          <NavLink to="/profile" className="nav-item" style={{ marginBottom: 0 }}>
+          <NavLink to="/profile" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            style={{ marginBottom: 0 }} title="پروفایل من">
             <Avatar name={user.full_name} color={user.avatar_color} size={32} avatar={user.avatar_path} />
-            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.full_name}</span>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+              <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.full_name}</span>
+              <small style={{ color: 'var(--text-3)', fontSize: 11 }}>پروفایل من</small>
+            </span>
           </NavLink>
         </div>
       </aside>
@@ -467,6 +496,8 @@ export default function App() {
                 <Route path="/notes" element={<Notes />} />
                 <Route path="/projects" element={<Projects />} />
                 <Route path="/colleagues" element={<Colleagues />} />
+                <Route path="/announcements" element={<Announcements />} />
+                <Route path="/letters" element={<Letters />} />
                 <Route path="/monitoring" element={
                   <Suspense fallback={<div className="content"><div className="empty">در حال بارگذاری…</div></div>}>
                     <Monitoring />

@@ -24,7 +24,7 @@ db.exec('PRAGMA foreign_keys = ON');
 //  قبلی است و کافی است جای فایل دیتابیس گذاشته شود.
 //  روی دیتابیسِ تازه (بدون جدول) کاری نمی‌کند و در اجراهای بعدی هم تکرار نمی‌شود.
 // ============================================================================
-const SCHEMA_TAG = '2026-08-25-projects-tasks-ai';
+const SCHEMA_TAG = '2026-09-01-org-roles-routing-letters';
 try {
   const has = (t) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t);
   if (has('app_settings')) {
@@ -1082,6 +1082,217 @@ try { db.exec('ALTER TABLE notes ADD COLUMN sort_order INTEGER DEFAULT 0'); } ca
   for (const [k, v] of Object.entries(defaults)) ins.run(k, v);
 }
 
+
+// ============================================================================
+//  سازمان و گردش‌کار — دور دوم (گزارش کاربران)
+//  ۱) تفکیک «سرگروه» و «مدیر واحد»   ۲) پیوست عمومی روی درخواست
+//  ۳) ثبت به نمایندگی   ۴) رونوشت با «دریافت شد»   ۵) مسیرِ پویا در هر درخواست
+//  ۶) مالکیتِ واحدیِ فرآیند   ۷) اطلاعیه‌ها   ۸) نامهٔ اداری
+//  همه افزایشی‌اند و رفتار فعلی را عوض نمی‌کنند مگر جایی که صریحاً گفته شده.
+// ============================================================================
+
+// --- سِمَت در واحد: یک نفر می‌تواند هم‌زمان سرگروه و مدیر باشد، پس سِمَت جزءِ کلید است
+try { db.exec("ALTER TABLE department_managers ADD COLUMN position TEXT DEFAULT 'head'"); } catch {}
+// جدولِ اولیه کلیدش (department_id, user_id) بود؛ برای اینکه یک نفر بتواند هر دو سِمَت را
+// داشته باشد، کلید باید (department_id, user_id, position) شود. بازسازیِ اتمیک با حفظ داده.
+try {
+  const info = db.prepare('PRAGMA table_info(department_managers)').all();
+  const pkCols = info.filter(c => c.pk > 0).map(c => c.name);
+  if (!pkCols.includes('position')) {
+    const before = db.prepare('SELECT COUNT(*) c FROM department_managers').get().c;
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN IMMEDIATE');
+    db.exec(`
+      CREATE TABLE department_managers_new (
+        department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        position TEXT NOT NULL DEFAULT 'head',   -- head: سرگروه | director: مدیر واحد
+        PRIMARY KEY (department_id, user_id, position)
+      );
+      INSERT INTO department_managers_new (department_id, user_id, position)
+        SELECT department_id, user_id, COALESCE(NULLIF(position, ''), 'head') FROM department_managers;
+    `);
+    const after = db.prepare('SELECT COUNT(*) c FROM department_managers_new').get().c;
+    if (after !== before) throw new Error(`انتقال ناقص: ${before} → ${after}`);
+    db.exec('DROP TABLE department_managers; ALTER TABLE department_managers_new RENAME TO department_managers;');
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+    console.log(`✅ سِمَت‌های واحد افزوده شد — ${before} ردیف حفظ شد`);
+  }
+} catch (e) {
+  try { db.exec('ROLLBACK'); } catch {}
+  try { db.exec('PRAGMA foreign_keys = ON'); } catch {}
+  console.error('⚠️ بازسازی department_managers انجام نشد (داده دست‌نخورده ماند):', e.message);
+}
+// یک‌بار: «مدیرِ اصلیِ ثبت‌شدهٔ واحد» سِمَتِ مدیر بگیرد و کارکنانِ نقش‌دارِ manager همان واحد،
+// سِمَتِ سرگروه. این دقیقاً وضعیتِ امروزِ سازمان است، فقط از این به بعد قابل تفکیک.
+function seedDeptPositions() {
+  const done = db.prepare("SELECT value FROM app_settings WHERE key = 'dept_positions_seeded'").get()?.value;
+  if (done === '1') return;
+  try {
+    const ins = db.prepare('INSERT OR IGNORE INTO department_managers (department_id, user_id, position) VALUES (?, ?, ?)');
+    for (const d of db.prepare('SELECT id, manager_id FROM departments WHERE manager_id IS NOT NULL').all()) {
+      ins.run(d.id, d.manager_id, 'director');
+    }
+    for (const u of db.prepare("SELECT id, department_id FROM users WHERE role = 'manager' AND department_id IS NOT NULL AND is_active = 1").all()) {
+      ins.run(u.department_id, u.id, 'head');
+    }
+    db.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)').run('dept_positions_seeded', '1');
+  } catch (e) { console.error('⚠️ مقداردهی اولیهٔ سِمَت‌ها:', e.message); }
+}
+
+// --- فرآیند: مالکیتِ واحدی، ثبت به نمایندگی، رونوشت
+// واحدِ صاحبِ فرآیند — فقط سرگروه/مدیرِ همین واحد (و مدیر سامانه) می‌تواند ویرایشش کند
+try { db.exec('ALTER TABLE workflow_templates ADD COLUMN owner_dept_id INTEGER REFERENCES departments(id) ON DELETE SET NULL'); } catch {}
+// آیا می‌توان این درخواست را به نمایندگی از شخص دیگری ثبت کرد؟
+try { db.exec('ALTER TABLE workflow_templates ADD COLUMN allow_on_behalf INTEGER DEFAULT 0'); } catch {}
+// رونوشت: 0 خاموش | 1 اختیاری | 2 الزامی (حداقل یک نفر)
+try { db.exec('ALTER TABLE workflow_templates ADD COLUMN cc_mode INTEGER DEFAULT 0'); } catch {}
+// آیا گیرندگانِ رونوشت باید «دریافت شد» بزنند؟
+try { db.exec('ALTER TABLE workflow_templates ADD COLUMN cc_require_ack INTEGER DEFAULT 1'); } catch {}
+
+// --- درخواست: پیوست عمومی + ثبت به نمایندگی
+// پیوستِ خودِ درخواست، مستقل از فیلدهای فرم — تا کاربر همیشه بتواند PDF/اسکن بگذارد
+try { db.exec("ALTER TABLE workflow_requests ADD COLUMN attachments TEXT DEFAULT '[]'"); } catch {}
+try { db.exec('ALTER TABLE workflow_requests ADD COLUMN on_behalf_id INTEGER REFERENCES users(id) ON DELETE SET NULL'); } catch {}
+// اگر شخصِ صاحبِ درخواست حساب کاربری ندارد، نامش متنی ثبت می‌شود
+try { db.exec("ALTER TABLE workflow_requests ADD COLUMN on_behalf_name TEXT DEFAULT ''"); } catch {}
+
+// --- مرحله: مسیرِ پویا (تاییدکننده/مهلت هنگام ثبت مشخص شود)
+try { db.exec('ALTER TABLE workflow_steps ADD COLUMN dynamic_approver INTEGER DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE workflow_steps ADD COLUMN dynamic_deadline INTEGER DEFAULT 0'); } catch {}
+// مرحله‌ای که درخواست‌دهنده هنگام ثبت تصمیم می‌گیرد باشد یا نباشد
+try { db.exec('ALTER TABLE workflow_steps ADD COLUMN skippable_at_submit INTEGER DEFAULT 0'); } catch {}
+
+db.exec(`
+-- نسخهٔ اختصاصیِ مراحلِ یک درخواست. اگر برای درخواستی ردیف داشته باشد، همین ملاک است
+-- و تغییرِ بعدیِ فرآیند روی درخواست‌های در جریان اثر نمی‌گذارد.
+CREATE TABLE IF NOT EXISTS workflow_request_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id INTEGER NOT NULL REFERENCES workflow_requests(id) ON DELETE CASCADE,
+  step_order INTEGER NOT NULL,
+  template_step_id INTEGER,             -- مرحلهٔ متناظر در فرآیند (اگر از آنجا آمده)
+  title TEXT NOT NULL,
+  approver_type TEXT DEFAULT 'user',
+  approver_id INTEGER,
+  approver_role TEXT,
+  alt_approvers TEXT DEFAULT '[]',
+  deadline_hours INTEGER DEFAULT 0,
+  is_optional INTEGER DEFAULT 0,
+  requires_signature INTEGER DEFAULT 1,
+  notify_approver INTEGER DEFAULT 1,
+  allow_attachments INTEGER DEFAULT 1,
+  create_task INTEGER DEFAULT 0,
+  task_assignee_type TEXT DEFAULT 'requester',
+  task_assignee_id INTEGER,
+  task_deadline_hours INTEGER DEFAULT 0,
+  task_title TEXT DEFAULT '',
+  task_notify INTEGER DEFAULT 1,
+  UNIQUE (request_id, step_order)
+);
+
+-- رونوشت: چه کسانی در جریان قرار می‌گیرند و چه کسی «دریافت شد» زده است
+CREATE TABLE IF NOT EXISTS workflow_request_cc (
+  request_id INTEGER NOT NULL REFERENCES workflow_requests(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  must_ack INTEGER DEFAULT 1,
+  acked_at TEXT,
+  note TEXT DEFAULT '',
+  PRIMARY KEY (request_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wf_cc_user ON workflow_request_cc(user_id, acked_at);
+`);
+
+// ============================================================================
+//  اطلاعیه‌ها و نامهٔ اداری
+//  اطلاعیه: یک‌طرفه است — مدیریت منتشر می‌کند، همه (یا واحدهای منتخب) می‌بینند و
+//  در صورت نیاز «دریافت شد» می‌زنند. عمداً از گردش‌کار جداست تا کارتابل شلوغ نشود.
+//  نامهٔ اداری: وارده/صادره/داخلی با شمارهٔ ثبتِ خودکار، گیرنده و رونوشت، پیوست و ارجاع.
+// ============================================================================
+db.exec(`
+CREATE TABLE IF NOT EXISTS announcements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  body TEXT DEFAULT '',
+  kind TEXT DEFAULT 'notice',        -- notice (اطلاعیه) | urgent (فوری) | event (رویداد)
+  audience TEXT DEFAULT 'all',       -- all | departments | users
+  dept_ids TEXT DEFAULT '[]',
+  user_ids TEXT DEFAULT '[]',
+  attachments TEXT DEFAULT '[]',
+  pinned INTEGER DEFAULT 0,
+  require_ack INTEGER DEFAULT 0,     -- گیرنده باید «دریافت شد» بزند
+  publish_at TEXT,                   -- خالی = همین حالا
+  expires_at TEXT,                   -- خالی = بدون انقضا
+  is_active INTEGER DEFAULT 1,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ann_active ON announcements(is_active, pinned, id);
+
+CREATE TABLE IF NOT EXISTS announcement_reads (
+  announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  read_at TEXT DEFAULT (datetime('now')),
+  acked_at TEXT,
+  PRIMARY KEY (announcement_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ann_reads_user ON announcement_reads(user_id);
+
+CREATE TABLE IF NOT EXISTS letters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  number TEXT DEFAULT '',            -- شمارهٔ ثبت (خودکار)
+  direction TEXT DEFAULT 'internal', -- in (وارده) | out (صادره) | internal (داخلی)
+  subject TEXT NOT NULL,
+  body TEXT DEFAULT '',
+  letter_date TEXT DEFAULT '',       -- تاریخ نامه (شمسی، متنی)
+  party TEXT DEFAULT '',             -- طرفِ بیرونی: فرستنده (وارده) یا گیرنده (صادره)
+  party_ref TEXT DEFAULT '',         -- شمارهٔ نامهٔ طرفِ مقابل
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  attachments TEXT DEFAULT '[]',
+  confidential INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'registered',  -- registered | in_review | archived
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_letters ON letters(direction, id);
+
+-- گیرندگان و رونوشت‌ها؛ «دریافت شد» همان چیزی است که واحد برنامه‌ریزی خواسته بود
+CREATE TABLE IF NOT EXISTS letter_recipients (
+  letter_id INTEGER NOT NULL REFERENCES letters(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'to',   -- to (گیرنده) | cc (رونوشت)
+  must_ack INTEGER DEFAULT 1,
+  read_at TEXT,
+  acked_at TEXT,
+  note TEXT DEFAULT '',
+  PRIMARY KEY (letter_id, user_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_letter_rcpt_user ON letter_recipients(user_id, acked_at);
+
+-- ارجاع نامه به یک همکار با دستور/توضیح
+CREATE TABLE IF NOT EXISTS letter_referrals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  letter_id INTEGER NOT NULL REFERENCES letters(id) ON DELETE CASCADE,
+  from_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  to_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  instruction TEXT DEFAULT '',
+  due_at TEXT,
+  done_at TEXT,
+  result TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_letter_ref ON letter_referrals(to_user_id, done_at);
+`);
+
+// شمارهٔ ثبتِ خودکار نامه‌ها — الگو در تنظیمات سازمان قابل تغییر است
+{
+  const ins = db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)');
+  ins.run('letter_prefix', 'ت‌ک');          // پیشوند شمارهٔ نامه
+  ins.run('announcements_dept_ids', '[]');  // چه واحدهایی اجازهٔ انتشار اطلاعیه دارند ([] = فقط مدیریت)
+}
+
 // ---------- seed ----------
 const userCount = db.prepare('SELECT COUNT(*) c FROM users').get().c;
 if (userCount === 0) {
@@ -1147,6 +1358,9 @@ if (userCount === 0) {
     }
   }
 }
+
+// عمداً بعد از بلوک seed: روی دیتابیسِ تازه هم واحدها و کاربران باید موجود باشند
+seedDeptPositions();
 
 // ثبت نسخهٔ ساختار — از این پس تا تغییر بعدیِ ساختار، پشتیبانِ پیش از مایگریشن تکرار نمی‌شود
 db.prepare(`INSERT INTO app_settings (key, value) VALUES ('schema_tag', ?)
