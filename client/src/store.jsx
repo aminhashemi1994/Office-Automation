@@ -45,8 +45,16 @@ export function StoreProvider({ children }) {
   const toggleTheme = useCallback(() => setThemeState(t => (t === 'dark' ? 'light' : 'dark')), []);
 
   const toast = useCallback((text, type = 'info') => {
+    // رندرِ یک شیء به‌عنوان فرزندِ React، کلِ درخت را می‌اندازد و کاربر صفحهٔ سفید می‌بیند.
+    // پس هر ورودی‌ای اینجا به متن تبدیل می‌شود؛ یک پیامِ بد بهتر از یک برنامهٔ خراب است.
+    const safe = typeof text === 'string' ? text
+      : text instanceof Error ? (text.message || 'خطای نامشخص')
+      : text == null ? ''
+      : typeof text === 'object' ? (text.message || text.error || 'خطای نامشخص')
+      : String(text);
+    if (!safe) return;
     const id = Math.random();
-    setToasts(t => [...t, { id, text, type }]);
+    setToasts(t => [...t, { id, text: safe, type }]);
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4200);
   }, []);
 
@@ -279,7 +287,11 @@ export function StoreProvider({ children }) {
     socketRef.current?.disconnect();
     setToken('');
     setUser(null);
-    if (reason) setTimeout(() => toast(reason, 'info'), 60);
+    // فقط پیامِ متنی «دلیل» است. اگر این تابع مستقیم به onClick داده شود، آرگومانش
+    // رویدادِ کلیک است و نمایشش کلِ برنامه را می‌انداخت (صفحهٔ سفید بعد از خروج).
+    if (typeof reason === 'string' && reason.trim()) {
+      setTimeout(() => toast(reason, 'info'), 60);
+    }
   }, [toast]);
 
   // خروج خودکار پس از ۳۰ دقیقه بی‌فعالیتی واقعی کاربر.

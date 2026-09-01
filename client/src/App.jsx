@@ -457,7 +457,8 @@ function Layout({ children }) {
             {notifOpen && <NotifPanel onClose={() => setNotifOpen(false)} />}
           </div>
           <NavLink to="/profile" className="icon-btn" title="پروفایل"><UserCircle size={20} /></NavLink>
-          <button className="icon-btn" onClick={logout} title="خروج"><LogOut size={19} /></button>
+          {/* بدون تابعِ پوششی، رویدادِ کلیک به‌عنوان «دلیل خروج» پاس می‌شد */}
+          <button className="icon-btn" onClick={() => logout()} title="خروج"><LogOut size={19} /></button>
         </header>
         {children}
       </div>
