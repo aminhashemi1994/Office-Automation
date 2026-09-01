@@ -290,7 +290,7 @@ export default function Leaves() {
           <table className="table">
             <thead>
               <tr>
-                <th>نام</th><th>واحد</th><th>سقف استحقاقی</th><th>انتقالی از سال قبل</th>
+                <th>نام</th><th>واحد</th><th>سقف امسال</th><th>موجودی از قبل (مانده)</th>
                 <th>استحقاقی مصرف‌شده</th><th>بدون حقوق</th><th>استعلاجی</th><th>مانده</th><th></th>
               </tr>
             </thead>

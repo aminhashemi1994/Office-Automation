@@ -8,7 +8,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Inbox, ListTodo, ArrowLeft, Clock, Bell, StickyNote, CalendarCheck, Handshake,
-  CalendarClock, AlertTriangle, FolderKanban, CheckCheck, Users2, MessageSquare,
+  CalendarClock, AlertTriangle, FolderKanban, CheckCheck, Users2, MessageSquare, Megaphone, Mail,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
@@ -80,6 +80,9 @@ export default function Dashboard() {
   const [notes, setNotes] = useState([]);
   const [projects, setProjects] = useState([]);
   const [crm, setCrm] = useState(null);
+  // اطلاعیه‌های سنجاق‌شده/نخوانده و نامه‌های نیازمند اقدام — وگرنه فقط با رفتن به منو دیده می‌شوند
+  const [announcements, setAnnouncements] = useState([]);
+  const [letters, setLetters] = useState({ letters: [], pending: 0 });
 
   const load = async () => {
     const [i, t, n, p] = await Promise.all([
@@ -88,6 +91,8 @@ export default function Dashboard() {
       api('/notes'),
       api('/projects').catch(() => ({ projects: [] })),
     ]);
+    api('/announcements').then(r => setAnnouncements(r.announcements || [])).catch(() => {});
+    api('/letters?mine=1').then(setLetters).catch(() => {});
     setInbox(i.requests);
     setMine(t.mine.filter(x => x.status !== 'done'));
     setAssigned(t.assigned.filter(x => x.status !== 'done'));
@@ -145,6 +150,54 @@ export default function Dashboard() {
           );
         })}
       </div>
+
+      {/* [اطلاعیه] سنجاق‌شده‌ها و نخوانده‌ها — کارِ اصلیِ این نوار «دیده‌شدن» است */}
+      {(() => {
+        const show = announcements.filter(a => a.pinned || !a.my_read_at).slice(0, 3);
+        if (!show.length) return null;
+        return (
+          <div style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
+            {show.map(a => (
+              <Link key={a.id} to={`/announcements?a=${a.id}`} className="card card-pad"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px',
+                  borderInlineStart: `4px solid ${a.kind === 'urgent' ? 'var(--red)' : 'var(--amber)'}`,
+                }}>
+                <Megaphone size={17} style={{ color: a.kind === 'urgent' ? 'var(--red)' : 'var(--amber)', flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                    <b style={{ fontSize: 13.5 }}>{a.title}</b>
+                    {a.kind === 'urgent' && <span className="badge badge-red">فوری</span>}
+                    {!a.my_read_at && <span className="badge badge-primary">نخوانده</span>}
+                    {!!a.require_ack && !a.my_acked_at && <span className="badge badge-amber">منتظر «دریافت شد»</span>}
+                  </div>
+                  <div style={{ fontSize: 12.3, color: 'var(--text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {a.body}
+                  </div>
+                </div>
+                <ArrowLeft size={16} style={{ color: 'var(--text-3)', flexShrink: 0 }} />
+              </Link>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* [دبیرخانه] نامه‌هایی که منتظر اقدام من هستند */}
+      {letters.pending > 0 && (
+        <Link to="/letters" className="card card-pad" style={{
+          display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, padding: '12px 16px',
+          borderInlineStart: '4px solid var(--sky)',
+        }}>
+          <Mail size={17} style={{ color: 'var(--sky)' }} />
+          <div style={{ flex: 1 }}>
+            <b style={{ fontSize: 13.5 }}>{fa(letters.pending)} نامه منتظر اقدام شماست</b>
+            <div style={{ fontSize: 12.3, color: 'var(--text-2)' }}>
+              دریافتشان را تایید کنید یا ارجاعِ باز را ببندید.
+            </div>
+          </div>
+          <ArrowLeft size={16} style={{ color: 'var(--text-3)' }} />
+        </Link>
+      )}
 
       {/* کارتابل — در انتظار اقدام */}
       <div className="card" style={{ marginBottom: 16 }}>

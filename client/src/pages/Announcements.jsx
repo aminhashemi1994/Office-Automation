@@ -79,7 +79,7 @@ function Editor({ item, onClose, onSaved }) {
         <textarea className="input" style={{ minHeight: 140 }} value={body}
           onChange={e => setBody(e.target.value)} />
       </Field>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div className="form-row">
         <Field label="نوع">
           <select className="input" value={kind} onChange={e => setKind(e.target.value)}>
             {Object.entries(KINDS).map(([k, v]) => <option key={k} value={k}>{v[0]}</option>)}
@@ -134,7 +134,7 @@ function Editor({ item, onClose, onSaved }) {
         <AttachmentPicker value={attachments} onChange={setAttachments} placeholder="انتخاب فایل" label="افزودن فایل" thumb={80} />
       </Field>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div className="form-row">
         <Field label="زمان انتشار (اختیاری)" hint="خالی = همین حالا">
           <div style={{ display: 'flex', gap: 8 }}>
             <div style={{ flex: 1 }}><JalaliDatePicker value={pubDate} onChange={setPubDate} placeholder="تاریخ" /></div>

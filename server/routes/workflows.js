@@ -336,9 +336,46 @@ export function stepHasApprovers(step, requesterId) {
   return resolveApprovers(step, requesterId, { fallback: false }).length > 0;
 }
 
-// مراحلی از یک فرآیند که برای این درخواست‌دهنده مسئولی ندارند
+// مراحلی از یک درخواستِ مشخص که مسئولی ندارند (درخواست‌دهنده معلوم است)
 export function stepsWithoutApprovers(steps, requesterId) {
   return (steps || []).filter(st => !stepHasApprovers(st, requesterId))
+    .map(st => ({ step_order: st.step_order, title: st.title, approver_label: describeApprover(st) }));
+}
+
+// ---------------------------------------------------------------------------
+//  هشدارِ سطحِ فرآیند (بدون درخواست‌دهندهٔ مشخص)
+//  اینجا نمی‌شود مرحلهٔ «سرگروهِ واحدِ درخواست‌دهنده» را نسبت به بینندهٔ فهرست سنجید —
+//  آن مرحله برای هر درخواست‌دهنده‌ای فرق می‌کند و اگر بیننده خودش تنها سرگروهِ واحدش
+//  باشد، بی‌جهت «بی‌مسئول» به‌نظر می‌رسد. پس فقط قاعده‌هایی بررسی می‌شوند که مستقل از
+//  درخواست‌دهنده قابل ارزیابی‌اند، به‌علاوهٔ حالتی که آن سِمَت در هیچ واحدی وجود ندارد.
+// ---------------------------------------------------------------------------
+function specResolvableEmpty(spec) {
+  const t = spec.approver_type;
+  if (t === 'dept_head' && spec.approver_id) return deptHeads(spec.approver_id).length === 0;
+  if (t === 'dept_director' && spec.approver_id) return deptDirectors(spec.approver_id).length === 0;
+  if (t === 'dept_manager' && spec.approver_id) return deptManagers(spec.approver_id).length === 0;
+  if (t === 'dept_member' && spec.approver_id) {
+    return db.prepare('SELECT COUNT(*) c FROM users WHERE department_id = ? AND is_active = 1').get(spec.approver_id).c === 0;
+  }
+  if (t === 'user' && spec.approver_id) {
+    return !db.prepare('SELECT 1 FROM users WHERE id = ? AND is_active = 1').get(spec.approver_id);
+  }
+  if (t === 'role' && spec.approver_role) {
+    return db.prepare('SELECT COUNT(*) c FROM users WHERE role = ? AND is_active = 1').get(spec.approver_role).c === 0;
+  }
+  // «سرگروه/مدیرِ واحدِ درخواست‌دهنده» فقط وقتی قطعاً خراب است که هیچ واحدی آن سِمَت را نداشته باشد
+  if (t === 'requester_head') return db.prepare("SELECT COUNT(*) c FROM department_managers WHERE position = 'head'").get().c === 0
+    && db.prepare("SELECT COUNT(*) c FROM users WHERE role = 'manager' AND is_active = 1 AND department_id IS NOT NULL").get().c === 0;
+  if (t === 'requester_director') return db.prepare("SELECT COUNT(*) c FROM department_managers WHERE position = 'director'").get().c === 0
+    && db.prepare('SELECT COUNT(*) c FROM departments WHERE manager_id IS NOT NULL').get().c === 0;
+  if (t === 'requester_manager') return specResolvableEmpty({ approver_type: 'requester_head' })
+    && specResolvableEmpty({ approver_type: 'requester_director' });
+  return false;   // قاعدهٔ ناقص/ناشناخته را اینجا هشدار نمی‌دهیم
+}
+
+export function templateStepWarnings(steps) {
+  return (steps || [])
+    .filter(st => stepSpecs(st).every(specResolvableEmpty))
     .map(st => ({ step_order: st.step_order, title: st.title, approver_label: describeApprover(st) }));
 }
 
@@ -659,7 +696,7 @@ r.get('/templates', (req, res) => {
       owner_dept_name: t.owner_dept_id
         ? db.prepare('SELECT name FROM departments WHERE id = ?').get(t.owner_dept_id)?.name || null : null,
       // مرحله‌هایی که هیچ مسئولی ندارند — هشدارِ فرم‌ساز
-      orphan_steps: stepsWithoutApprovers(getSteps(t.id), req.user.id).map(o => o.title),
+      orphan_steps: templateStepWarnings(getSteps(t.id)).map(o => o.title),
     }));
   res.json({ templates });
 });

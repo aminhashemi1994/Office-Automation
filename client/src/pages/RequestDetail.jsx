@@ -243,6 +243,24 @@ export default function RequestDetail() {
         </div>
       </div>
 
+      {/* [رونوشت] گیرندهٔ رونوشت باید همان بالا بفهمد تاییدکننده نیست و فقط باید دریافت را اعلام کند */}
+      {req.can_ack && (
+        <div className="card card-pad" style={{
+          marginBottom: 16, borderInlineStart: '4px solid var(--primary)', background: 'var(--primary-soft)',
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+        }}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <b style={{ fontSize: 13.5 }}>این نامه به‌صورت رونوشت برای شما آمده است</b>
+            <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 3, lineHeight: 1.85 }}>
+              شما تاییدکنندهٔ این درخواست نیستید و لازم نیست کاری انجام دهید؛ فقط اعلام کنید که آن را دیده‌اید.
+            </div>
+          </div>
+          <button className="btn btn-primary" disabled={busy} onClick={ackCc}>
+            <Check size={16} /> دریافت شد
+          </button>
+        </div>
+      )}
+
       <div className="grid-2">
         <div>
           <div className="card card-pad" style={{ marginBottom: 18 }}>

@@ -258,7 +258,7 @@ function NewRequestModal({ templates, onClose, onDone }) {
         <button className="btn btn-primary" disabled={!tpl || !title.trim() || busy} onClick={submit}>ثبت درخواست</button>
       </>}>
       {/* اول واحد، بعد فرآیندهای همان واحد — فهرست بلندِ همهٔ فرآیندها گیج‌کننده بود */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.6fr', gap: 12 }}>
+      <div className="form-row-wide">
         <Field label="واحد / بخش">
           <select className="input" value={groupKey} onChange={e => pickGroup(e.target.value)}>
             {groups.map(g => (
@@ -300,7 +300,7 @@ function NewRequestModal({ templates, onClose, onDone }) {
       {!!tpl?.allow_on_behalf && (
         <Field label="این درخواست از طرفِ چه کسی است؟ (اختیاری)"
           hint="اگر برای همکار دیگری ثبت می‌کنید انتخابش کنید. اگر آن شخص حساب کاربری ندارد، نامش را در کادر دوم بنویسید. در هر حال ثبت‌کننده شما باقی می‌مانید.">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="form-row">
             <select className="input" value={onBehalfId}
               onChange={e => { setOnBehalfId(e.target.value); if (e.target.value) setOnBehalfName(''); }}>
               <option value="">— خودم —</option>
@@ -389,7 +389,7 @@ function NewRequestModal({ templates, onClose, onDone }) {
                           </span>
                         ))}
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <div className="form-row">
                         <select className="input" value="" onChange={e => {
                           const [type, id] = e.target.value.split(':');
                           if (!type) return;

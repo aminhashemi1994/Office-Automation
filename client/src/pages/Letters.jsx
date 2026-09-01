@@ -109,7 +109,7 @@ function Editor({ item, onClose, onSaved }) {
           {item ? 'ذخیره' : 'ثبت نامه'}
         </button>
       </>}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+      <div className="form-row-3">
         <Field label="نوع نامه">
           <select className="input" value={direction} onChange={e => setDirection(e.target.value)} disabled={!!item}>
             {Object.entries(DIRECTIONS).map(([k, v]) => <option key={k} value={k}>{v[0]}</option>)}
@@ -129,7 +129,7 @@ function Editor({ item, onClose, onSaved }) {
           placeholder="مثلاً: استعلام قیمت کابل افشان" />
       </Field>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12 }}>
+      <div className="form-row-wide">
         <Field label={direction === 'in' ? 'فرستنده (سازمان بیرونی)' : direction === 'out' ? 'گیرنده (سازمان بیرونی)' : 'طرفِ مکاتبه'}
           hint={direction === 'internal' ? 'برای نامهٔ داخلی می‌توانید خالی بگذارید' : ''}>
           <input className="input" value={party} onChange={e => setParty(e.target.value)} />
@@ -144,7 +144,7 @@ function Editor({ item, onClose, onSaved }) {
         <textarea className="input" style={{ minHeight: 110 }} value={body} onChange={e => setBody(e.target.value)} />
       </Field>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div className="form-row">
         <Field label="گیرندگان">
           <Picker value={toIds} onChange={setToIds} label="افزودن گیرنده…" users={users} />
         </Field>

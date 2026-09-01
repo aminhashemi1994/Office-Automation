@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Pencil, ArrowUp, ArrowDown, Trash2, Clock, Search, Paperclip } from 'lucide-react';
+import { Plus, Pencil, ArrowUp, ArrowDown, Trash2, Clock, Search, Paperclip, Eye, AlertTriangle } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { Modal, Field, UserPicker, Segmented } from '../components/common.jsx';
@@ -37,6 +37,8 @@ export default function Workflows() {
   const [templates, setTemplates] = useState([]);
   const [editing, setEditing] = useState(null);
   const [search, setSearch] = useState('');
+  // پیش‌فرض: فقط فرآیندهایی که خودم می‌توانم تغییرشان بدهم
+  const [onlyMine, setOnlyMine] = useState(true);
   const [confirmDel, setConfirmDel] = useState(null);
 
   const load = async () => {
@@ -44,9 +46,17 @@ export default function Workflows() {
     setTemplates(r.templates);
   };
   useEffect(() => { load(); }, []);
-  const filtered = templates.filter(t => !search || t.name.includes(search) || (t.description || '').includes(search));
+  // مبنا پاسخ سرور است؛ اگر نسخهٔ قدیمیِ پاسخ بود، به قاعدهٔ قبلی برمی‌گردیم
+  const canManage = (t) => (t.can_manage !== undefined ? !!t.can_manage
+    : (hasPerm('workflows.manage') || t.created_by === user.id));
 
-  const canDelete = (t) => hasPerm('workflows.manage') || t.created_by === user.id;
+  const mineCount = templates.filter(canManage).length;
+  const filtered = templates
+    .filter(t => !onlyMine || canManage(t))
+    .filter(t => !search || t.name.includes(search) || (t.description || '').includes(search))
+    // فرآیندهایی که می‌توانم تغییرشان بدهم اول بیایند
+    .sort((a, b) => (canManage(b) ? 1 : 0) - (canManage(a) ? 1 : 0));
+  const canDelete = (t) => canManage(t);
 
   const toggleActive = async (t) => {
     try { await api(`/workflows/templates/${t.id}`, { method: 'PUT', body: { is_active: !t.is_active } }); load(); }
@@ -64,9 +74,18 @@ export default function Workflows() {
 
   return (
     <div className="content">
-      <div className="page-head">
+      <div className="page-head" style={{ flexWrap: 'wrap', gap: 10 }}>
         <h2>فرآیندهای اداری (گردش کار)</h2>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* فهرست برای کسی که فقط فرآیندهای واحد خودش را می‌سازد نباید شلوغ باشد */}
+          <div className="tabs" style={{ margin: 0 }}>
+            <button className={`tab ${onlyMine ? 'active' : ''}`} onClick={() => setOnlyMine(true)}>
+              فرآیندهای من {mineCount > 0 && <span className="badge-count">{fa(mineCount)}</span>}
+            </button>
+            <button className={`tab ${!onlyMine ? 'active' : ''}`} onClick={() => setOnlyMine(false)}>
+              همه ({fa(templates.length)})
+            </button>
+          </div>
           <div style={{ position: 'relative' }}>
             <Search size={15} style={{ position: 'absolute', right: 11, top: 11, color: 'var(--text-3)' }} />
             <input className="input" style={{ paddingRight: 34, width: 220 }} placeholder="جستجوی فرآیند…"
@@ -81,13 +100,29 @@ export default function Workflows() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: 6 }}>
               <b style={{ fontSize: 15 }}>{t.name}</b>
               <div style={{ display: 'flex', gap: 4 }}>
-                <button className="icon-btn" style={{ width: 30, height: 30 }} title="ویرایش" onClick={() => setEditing(t)}><Pencil size={14} /></button>
-                {canDelete(t) && (
+                {canManage(t) ? <>
+                  <button className="icon-btn" style={{ width: 30, height: 30 }} title="ویرایش" onClick={() => setEditing(t)}><Pencil size={14} /></button>
                   <button className="icon-btn" style={{ width: 30, height: 30, color: 'var(--red)' }} title="حذف فرآیند" onClick={() => setConfirmDel(t)}><Trash2 size={14} /></button>
+                </> : (
+                  <span className="badge badge-gray" title={t.owner_dept_name
+                    ? `این فرآیند متعلق به واحد «${t.owner_dept_name}» است`
+                    : 'برای ویرایش این فرآیند دسترسی ندارید'}>
+                    <Eye size={11} /> فقط مشاهده
+                  </span>
                 )}
               </div>
             </div>
+            {t.owner_dept_name && (
+              <div style={{ fontSize: 11.8, color: 'var(--text-3)', marginBottom: 6 }}>واحد صاحب: {t.owner_dept_name}</div>
+            )}
             {t.description && <p style={{ fontSize: 12.8, color: 'var(--text-2)', marginBottom: 10 }}>{t.description}</p>}
+            {/* مرحله‌ای که مسئول ندارد یعنی درخواست‌ها روی میز مدیر سامانه می‌افتند */}
+            {t.orphan_steps?.length > 0 && (
+              <div className="badge badge-red" style={{ marginBottom: 8, whiteSpace: 'normal', textAlign: 'right', lineHeight: 1.7 }}>
+                <AlertTriangle size={12} /> {t.orphan_steps.map(x => `«${x}»`).join('، ')} مسئولی ندارد —
+                برای واحد مربوطه سرگروه یا مدیر تعیین کنید
+              </div>
+            )}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
               {t.steps.map(s => (
                 <span key={s.id} className={`badge ${s.is_optional ? 'badge-gray' : 'badge-primary'}`}>

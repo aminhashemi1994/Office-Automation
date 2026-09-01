@@ -252,7 +252,7 @@ function SmsCard() {
           <span style={{ color: 'var(--red)', fontWeight: 700 }}> ارسال واقعی روشن است ولی درگاه کامل نشده — همچنان شبیه‌سازی می‌شود.</span>
         )}
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div className="form-row">
         <Field label="نام درگاه" hint="kavenegar / ghasedak / …">
           <input className="input" value={form.sms_provider}
             onChange={e => setForm(f => ({ ...f, sms_provider: e.target.value }))} />
@@ -377,7 +377,7 @@ function AiCard() {
           <span style={{ color: 'var(--red)', fontWeight: 700 }}> فعال است ولی هنوز کلید وارد نشده — پشتیبان کار نمی‌کند.</span>
         )}
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div className="form-row">
         <Field label="آدرس سرویس (Base URL)" hint="مثلاً https://api.openai.com/v1">
           <input className="input" style={{ direction: 'ltr', textAlign: 'left' }} value={form.ai_base_url}
             onChange={e => setForm(f => ({ ...f, ai_base_url: e.target.value }))} />

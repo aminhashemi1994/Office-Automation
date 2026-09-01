@@ -21,7 +21,14 @@ export default function Departments() {
   return (
     <div className="content">
       <div className="page-head">
-        <h2>واحدهای سازمانی</h2>
+        <div>
+          <h2>واحدهای سازمانی</h2>
+          <p style={{ fontSize: 12.5, color: 'var(--text-3)', margin: '4px 0 0', maxWidth: 620, lineHeight: 1.85 }}>
+            هر واحد دو سِمَت دارد: <b>سرگروه</b> (سطح اول تایید) و <b>مدیر</b> (بالادستِ سرگروه).
+            یک نفر می‌تواند هر دو را داشته باشد. تا وقتی واحدی هیچ‌کدام را نداشته باشد،
+            درخواست‌هایش روی میز مدیر سامانه می‌افتد.
+          </p>
+        </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <div style={{ position: 'relative' }}>
             <Search size={15} style={{ position: 'absolute', right: 11, top: 11, color: 'var(--text-3)' }} />
@@ -31,6 +38,21 @@ export default function Departments() {
           <button className="btn btn-primary" onClick={() => setEditing('new')}><Plus size={17} /> واحد جدید</button>
         </div>
       </div>
+      {(() => {
+        const missing = departments.filter(d => !(d.heads || []).length && !(d.directors || []).length);
+        return missing.length ? (
+          <div className="card card-pad" style={{ marginBottom: 16, borderInlineStart: '4px solid var(--red)' }}>
+            <b style={{ fontSize: 13.3, color: 'var(--red)' }}>
+              {fa(missing.length)} واحد هنوز سرگروه یا مدیر ندارد
+            </b>
+            <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 4, lineHeight: 1.85 }}>
+              {missing.map(d => d.name).join('، ')} — درخواست‌های این واحدها به مدیر سامانه می‌رود.
+              روی هر واحد «ویرایش» بزنید و مسئولش را مشخص کنید.
+            </div>
+          </div>
+        ) : null;
+      })()}
+
       <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
         {filtered.map(d => (
           <div key={d.id} className="card card-pad">

@@ -788,3 +788,12 @@ select.input option { background: var(--surface); color: var(--text); }
 .wf-flags { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; flex-shrink: 0; }
 /* گرهٔ انتخاب‌شدهٔ نمودار — تاریخچه روی همین مرحله فیلتر شده است */
 .wf-node.picked { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+/* ---------- ردیف‌های چندستونیِ فرم ----------
+   ستون‌های ثابت روی موبایل/تبلت له می‌شدند؛ این کلاس‌ها زیر ۷۰۰ پیکسل تک‌ستونه می‌شوند. */
+.form-row { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+.form-row-3 { display: grid; gap: 12px; grid-template-columns: 1fr 1fr 1fr; }
+.form-row-wide { display: grid; gap: 12px; grid-template-columns: 1.5fr 1fr; }
+@media (max-width: 700px) {
+  .form-row, .form-row-3, .form-row-wide { grid-template-columns: 1fr; }
+}
