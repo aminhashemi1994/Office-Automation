@@ -206,7 +206,8 @@ export function canViewRequest(user, rq) {
   if (rq.requester_id === user.id) return true;               // درخواست‌های خودم
   const tpl = db.prepare('SELECT created_by FROM workflow_templates WHERE id = ?').get(rq.template_id);
   if (tpl?.created_by === user.id) return true;
-  if (db.prepare('SELECT 1 FROM workflow_actions WHERE request_id = ? AND actor_id = ?').get(rq.id, user.id)) return true;
+  // [پرسش و پاسخ] کسی که از او پرسش شده هم باید بتواند درخواست را ببیند و پاسخ دهد
+  if (db.prepare('SELECT 1 FROM workflow_actions WHERE request_id = ? AND (actor_id = ? OR target_user_id = ?)').get(rq.id, user.id, user.id)) return true;
   // [مورد ۶] مدیرِ واحدِ درخواست‌دهنده
   const requester = db.prepare('SELECT department_id FROM users WHERE id = ?').get(rq.requester_id);
   if (requester?.department_id && getManagedDeptIds(user).includes(requester.department_id)) return true;
@@ -531,10 +532,11 @@ function requestDetail(id, userId) {
   const sigByStep = new Map(steps.map(st => [st.step_order, st.requires_signature]));
   const actions = db.prepare(`
     SELECT a.*, u.full_name AS actor_name, u.position AS actor_position,
-           dpt.name AS actor_department,
+           dpt.name AS actor_department, tu.full_name AS target_name,
            (u.signature_path IS NOT NULL AND u.signature_path != '') AS has_signature
     FROM workflow_actions a
     JOIN users u ON u.id = a.actor_id
+    LEFT JOIN users tu ON tu.id = a.target_user_id
     LEFT JOIN departments dpt ON dpt.id = u.department_id
     WHERE a.request_id = ? ORDER BY a.id`).all(id)
     .map(a => ({ ...a, step_requires_signature: sigByStep.get(a.step_order) ?? 1 }));
@@ -574,7 +576,25 @@ function requestDetail(id, userId) {
   // [رونوشت] چه کسانی در جریان‌اند و چه کسی دریافت را تایید کرده است
   const cc = ccOf(req_.id);
   const myCc = cc.find(c2 => c2.user_id === userId) || null;
+  // [پرسش و پاسخ] پرسش‌هایی که هنوز پاسخ نگرفته‌اند
+  const answered = new Set(actions.filter(a => a.action === 'answer').map(a => a.parent_id));
+  const open_questions = actions.filter(a => a.action === 'question' && !answered.has(a.id));
+  // [ردیابی] چه کسانی دیده‌اند + آخرین اقدامِ هر نفر
+  const lastAction = new Map();
+  for (const a of actions) lastAction.set(a.actor_id, a);
+  const views = db.prepare(`SELECT v.user_id, v.first_seen_at, v.last_seen_at, v.view_count,
+      u.full_name, u.avatar_color, d.name AS department_name
+    FROM workflow_request_views v
+    JOIN users u ON u.id = v.user_id
+    LEFT JOIN departments d ON d.id = u.department_id
+    WHERE v.request_id = ? ORDER BY v.first_seen_at`).all(id)
+    .map(v => {
+      const la = lastAction.get(v.user_id);
+      return { ...v, last_action: la ? { action: la.action, created_at: la.created_at } : null };
+    });
   return {
+    views, open_questions,
+    my_open_questions: open_questions.filter(q => q.target_user_id === userId).map(q => q.id),
     ...req_, steps, actions, files, can_attach_action, can_attach_note,
     request_attachments: reqAtt,
     cc, cc_pending: cc.filter(c2 => c2.must_ack && !c2.acked_at).length,
@@ -1122,13 +1142,33 @@ r.get('/requests/inbox', (req, res) => {
     if (rq.status !== 'in_progress') return rq.requester_id === req.user.id;
     const step = currentStepOf(rq);
     return step && resolveApprovers(step, rq.requester_id).includes(req.user.id);
-  }).map(rq => ({
+  });
+  // [پرسش و پاسخ] درخواست‌هایی که پرسشِ بی‌پاسخی از من دارند هم در کارتابل می‌آیند
+  const qRows = db.prepare(`SELECT q.request_id, COUNT(*) c FROM workflow_actions q
+    WHERE q.action = 'question' AND q.target_user_id = ?
+      AND NOT EXISTS (SELECT 1 FROM workflow_actions a WHERE a.parent_id = q.id AND a.action = 'answer')
+    GROUP BY q.request_id`).all(req.user.id);
+  const qCount = new Map(qRows.map(x => [x.request_id, x.c]));
+  const have = new Set(inbox.map(rq => rq.id));
+  if (qRows.length) {
+    const extra = db.prepare(`
+      SELECT r.*, t.name AS template_name, u.full_name AS requester_name
+      FROM workflow_requests r
+      JOIN workflow_templates t ON t.id = r.template_id
+      JOIN users u ON u.id = r.requester_id
+      WHERE r.id IN (${qRows.map(() => '?').join(',')})`).all(...qRows.map(x => x.request_id));
+    for (const rq of extra) if (!have.has(rq.id)) inbox.push(rq);
+    inbox.sort((a, b) => b.id - a.id);
+  }
+  const result = inbox.map(rq => ({
     ...rq,
-    step_title: rq.status === 'in_progress' ? currentStepOf(rq)?.title
+    open_questions: qCount.get(rq.id) || 0,
+    step_title: !have.has(rq.id) ? 'پاسخ به پرسش'
+      : rq.status === 'in_progress' ? currentStepOf(rq)?.title
       : rq.status === 'awaiting_requester' ? 'تایید نهایی شما' : 'اصلاح و ارسال مجدد',
     attachments_count: attachmentCount(rq),
   }));
-  res.json({ requests: inbox });
+  res.json({ requests: result });
 });
 
 r.get('/requests/mine', (req, res) => {
@@ -1246,6 +1286,10 @@ r.get('/requests/:id', (req, res) => {
   const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
   if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
   if (!canViewRequest(req.user, rq)) return res.status(403).json({ error: 'شما مجاز به مشاهدهٔ این درخواست نیستید' });
+  // [ردیابی] ثبتِ دیدن — اولین و آخرین بار و تعداد دفعات
+  db.prepare(`INSERT INTO workflow_request_views (request_id, user_id) VALUES (?, ?)
+    ON CONFLICT(request_id, user_id) DO UPDATE SET last_seen_at = datetime('now'), view_count = view_count + 1`)
+    .run(rq.id, req.user.id);
   const detail = requestDetail(Number(req.params.id), req.user.id);
   res.json({ request: detail });
 });
@@ -1491,6 +1535,62 @@ r.post('/requests/:id/comment', (req, res) => {
     });
   }
   res.json({ ok: true, attachments: attIds });
+});
+
+// [پرسش و پاسخ] پرسیدنِ سؤال از یک فردِ مشخص دربارهٔ این درخواست — مرحله تغییر نمی‌کند
+r.post('/requests/:id/question', (req, res) => {
+  const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  if (!canViewRequest(req.user, rq)) return res.status(403).json({ error: 'شما مجاز به اقدام روی این درخواست نیستید' });
+  const text = String(req.body?.comment || '').trim().slice(0, 2000);
+  const toId = Number(req.body?.to_user_id);
+  if (!text) return res.status(400).json({ error: 'متن پرسش الزامی است' });
+  const target = db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(toId);
+  if (!target) return res.status(400).json({ error: 'فردِ پاسخ‌دهنده را انتخاب کنید' });
+  if (target.id === req.user.id) return res.status(400).json({ error: 'نمی‌توانید از خودتان بپرسید' });
+  const info = db.prepare(`INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, target_user_id)
+    VALUES (?, ?, ?, 'question', ?, ?)`).run(rq.id, rq.current_step, req.user.id, text, target.id);
+  notifyUsers([target.id], {
+    type: 'workflow',
+    title: 'پرسش دربارهٔ یک درخواست',
+    body: `${req.user.full_name} دربارهٔ «${rq.title}» از شما پرسید: ${text.slice(0, 120)}`,
+    link: `/cartable/${rq.id}`,
+  });
+  res.json({ ok: true, id: info.lastInsertRowid });
+});
+
+// [پرسش و پاسخ] پاسخ به پرسش — فقط همان کسی که از او پرسیده شده (یا ادمین)
+r.post('/requests/:id/answer', (req, res) => {
+  const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  const q = db.prepare("SELECT * FROM workflow_actions WHERE id = ? AND request_id = ? AND action = 'question'")
+    .get(Number(req.body?.question_id), rq.id);
+  if (!q) return res.status(404).json({ error: 'پرسش یافت نشد' });
+  if (q.target_user_id !== req.user.id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'این پرسش از شما نشده است' });
+  }
+  if (db.prepare("SELECT 1 FROM workflow_actions WHERE parent_id = ? AND action = 'answer'").get(q.id)) {
+    return res.status(400).json({ error: 'به این پرسش قبلاً پاسخ داده شده است' });
+  }
+  const text = String(req.body?.comment || '').trim().slice(0, 2000);
+  const attIds = normalizeFileIds(req.body?.attachments || []);
+  if (!text && !attIds.length) return res.status(400).json({ error: 'متن پاسخ الزامی است' });
+  if (attIds.length) {
+    const tplRow = db.prepare('SELECT allow_attachments FROM workflow_templates WHERE id = ?').get(rq.template_id);
+    if (!canAttach(tplRow, null)) return res.status(400).json({ error: 'پیوست فایل در این فرآیند مجاز نیست' });
+  }
+  db.prepare(`INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments, parent_id, target_user_id)
+    VALUES (?, ?, ?, 'answer', ?, ?, ?, ?)`)
+    .run(rq.id, rq.current_step, req.user.id, text, JSON.stringify(attIds), q.id, q.actor_id);
+  if (q.actor_id !== req.user.id) {
+    notifyUsers([q.actor_id], {
+      type: 'workflow',
+      title: 'پاسخ پرسش شما',
+      body: `${req.user.full_name} به پرسش شما دربارهٔ «${rq.title}» پاسخ داد${text ? ': ' + text.slice(0, 120) : ''}`,
+      link: `/cartable/${rq.id}`,
+    });
+  }
+  res.json({ ok: true });
 });
 
 // [مورد ۷] ساخت دستیِ تسک از یک درخواست (توسط مدیرِ مجاز یا سازنده/مسئول)

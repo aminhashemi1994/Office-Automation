@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowRight, Check, X, Clock, Ban, SkipForward, Printer, Bell, ListTodo, Paperclip,
-  Pencil, Undo2, Send, Trash2, ShieldCheck,
+  Pencil, Undo2, Send, Trash2, ShieldCheck, HelpCircle, Reply, Eye,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
@@ -22,6 +22,9 @@ const ACTION_LABEL = {
   comment: ['یادداشت', 'badge-gray'],
   edit: ['ویرایش کرد', 'badge-amber'],
   return: ['برگشت داد', 'badge-red'],
+  ack: ['دریافت شد', 'badge-green'],
+  question: ['پرسش', 'badge-sky'],
+  answer: ['پاسخ', 'badge-primary'],
 };
 
 export default function RequestDetail() {
@@ -41,6 +44,8 @@ export default function RequestDetail() {
   const [edit, setEdit] = useState(null);        // {title, data} — ویرایش عنوان و فرمِ درخواست
   const [ret, setRet] = useState(null);          // {to_step, resume_step, comment, attachments} — برگشت درخواست
   const [confirmDel, setConfirmDel] = useState(false);
+  const [ask, setAsk] = useState(null);          // {to_user_id, comment} — پرسش از یک فرد
+  const [answer, setAnswer] = useState(null);    // {question, comment, attachments} — پاسخ به پرسش
 
   const load = async () => {
     try {
@@ -88,6 +93,28 @@ export default function RequestDetail() {
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
   };
+
+  // [پرسش و پاسخ]
+  const submitAsk = async () => {
+    setBusy(true);
+    try {
+      await api(`/workflows/requests/${req.id}/question`, { method: 'POST', body: ask });
+      setAsk(null); await load(); toast('پرسش ارسال شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+  const submitAnswer = async () => {
+    setBusy(true);
+    try {
+      await api(`/workflows/requests/${req.id}/answer`, { method: 'POST', body: {
+        question_id: answer.question.id, comment: answer.comment, attachments: answer.attachments,
+      } });
+      setAnswer(null); await load(); refreshBadges(); toast('پاسخ ثبت شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+  const openQIds = new Set((req.open_questions || []).map(q => q.id));
+  const myOpenQ = (req.open_questions || []).filter(q => (req.my_open_questions || []).includes(q.id));
 
   const cancel = async () => {
     setBusy(true);
@@ -244,6 +271,19 @@ export default function RequestDetail() {
       </div>
 
       {/* [رونوشت] گیرندهٔ رونوشت باید همان بالا بفهمد تاییدکننده نیست و فقط باید دریافت را اعلام کند */}
+      {myOpenQ.length > 0 && (
+        <div className="card card-pad" style={{ marginBottom: 16, borderInlineStart: '4px solid var(--primary)' }}>
+          <b style={{ display: 'flex', alignItems: 'center', gap: 6 }}><HelpCircle size={16} /> از شما پرسیده شده است</b>
+          {myOpenQ.map(q => (
+            <div key={q.id} style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8, fontSize: 13 }}>
+              <span style={{ flex: 1 }}><b>{q.actor_name}:</b> {q.comment}</span>
+              <button className="btn btn-primary btn-sm" onClick={() => setAnswer({ question: q, comment: '', attachments: [] })}>
+                <Reply size={13} /> پاسخ
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {req.can_ack && (
         <div className="card card-pad" style={{
           marginBottom: 16, borderInlineStart: '4px solid var(--primary)', background: 'var(--primary-soft)',
@@ -301,6 +341,10 @@ export default function RequestDetail() {
                 title={req.can_attach_note ? 'ثبت یادداشت و پیوست فایل' : 'در این فرآیند فقط یادداشت متنی مجاز است'}>
                 <Paperclip size={14} /> {req.can_attach_note ? 'افزودن یادداشت / پیوست فایل' : 'افزودن یادداشت'}
               </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setAsk({ to_user_id: null, comment: '' })}
+                title="پرسیدن سؤال از یک همکار دربارهٔ این درخواست">
+                <HelpCircle size={14} /> پرسش از همکار
+              </button>
             </div>
             {(() => {
               const rows = stepFilter === null ? req.actions : req.actions.filter(a => a.step_order === stepFilter);
@@ -318,12 +362,31 @@ export default function RequestDetail() {
                   <span className={`badge ${ac}`}>{al}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <b style={{ fontSize: 13.3 }}>{a.actor_name}</b>
+                    {a.action === 'question' && a.target_name && (
+                      <span style={{ fontSize: 12.3, color: 'var(--text-3)' }}> ← از {a.target_name}</span>
+                    )}
+                    {a.action === 'answer' && (() => {
+                      const q = req.actions.find(x => x.id === a.parent_id);
+                      return q && <div style={{ fontSize: 12, color: 'var(--text-3)', borderInlineStart: '2px solid var(--border)', paddingInlineStart: 6, margin: '3px 0' }}>
+                        در پاسخ به {q.actor_name}: {q.comment.slice(0, 100)}
+                      </div>;
+                    })()}
                     {a.comment && <div style={{ fontSize: 12.8, color: 'var(--text-2)' }}>{a.comment}</div>}
                     {atts.length > 0 && (
                       <div style={{ marginTop: 8 }}>
                         <AttachmentList ids={atts} thumb={84} title="پیوستِ این اقدام" />
                       </div>
                     )}
+                    {a.action === 'question' && (openQIds.has(a.id)
+                      ? <div style={{ marginTop: 5, display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <span className="badge badge-amber">منتظر پاسخ</span>
+                          {(req.my_open_questions || []).includes(a.id) && (
+                            <button className="btn btn-primary btn-sm" onClick={() => setAnswer({ question: a, comment: '', attachments: [] })}>
+                              <Reply size={13} /> پاسخ
+                            </button>
+                          )}
+                        </div>
+                      : <span className="badge badge-green" style={{ marginTop: 5 }}><Check size={11} /> پاسخ داده شد</span>)}
                   </div>
                   <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>{fmtDateTime(a.created_at)}</span>
                 </div>
@@ -357,6 +420,37 @@ export default function RequestDetail() {
               }} />
           </div>
 
+          {/* [ردیابی] چه کسانی درخواست را دیده‌اند و آخرین اقدامشان */}
+          {req.views?.length > 0 && (
+            <div className="card card-pad" style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <Eye size={15} /><b style={{ fontSize: 13.5 }}>ردیابی مشاهده و اقدام</b>
+                <span className="badge badge-gray">{fa(req.views.length)} نفر دیده‌اند</span>
+              </div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {req.views.map(v => {
+                  const la = v.last_action && (ACTION_LABEL[v.last_action.action] || ACTION_LABEL.comment);
+                  return (
+                    <div key={v.user_id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+                      <Avatar name={v.full_name} color={v.avatar_color} size={24} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        {v.full_name}
+                        {v.department_name && <span style={{ color: 'var(--text-3)' }}> · {v.department_name}</span>}
+                        <div style={{ fontSize: 11.3, color: 'var(--text-3)' }}
+                          title={`آخرین بار: ${fmtDateTime(v.last_seen_at)} — ${fa(v.view_count)} بار`}>
+                          اولین مشاهده: {fmtDateTime(v.first_seen_at)}
+                        </div>
+                      </div>
+                      {la
+                        ? <span className={`badge ${la[1]}`}>{la[0]}</span>
+                        : <span className="badge badge-gray">فقط دیده</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* [رونوشت] چه کسانی در جریان‌اند و چه کسی دریافت را تایید کرده است */}
           {req.cc?.length > 0 && (
             <div className="card card-pad" style={{ marginBottom: 18 }}>
@@ -379,7 +473,10 @@ export default function RequestDetail() {
                       ? <span className="badge badge-green" title={c.note || ''}>
                           <Check size={11} /> دریافت شد — {fmtDateTime(c.acked_at)}
                         </span>
-                      : <span className="badge badge-gray">{c.must_ack ? 'منتظر تایید دریافت' : 'در جریان است'}</span>}
+                      : <span className="badge badge-gray">
+                          {req.views?.some(v => v.user_id === c.user_id) ? 'دیده — ' : 'هنوز ندیده — '}
+                          {c.must_ack ? 'منتظر تایید دریافت' : 'در جریان است'}
+                        </span>}
                   </div>
                 ))}
               </div>
@@ -624,6 +721,46 @@ export default function RequestDetail() {
             <div style={{ fontSize: 12.3, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
               <Paperclip size={13} /> پیوست فایل در این فرآیند مجاز نیست؛ فقط یادداشت متنی ثبت می‌شود.
             </div>
+          )}
+        </Modal>
+      )}
+
+      {/* [پرسش و پاسخ] */}
+      {ask && (
+        <Modal title="پرسش از همکار" onClose={() => setAsk(null)}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setAsk(null)}>انصراف</button>
+            <button className="btn btn-primary" disabled={busy || !ask.to_user_id || !ask.comment.trim()} onClick={submitAsk}>ارسال پرسش</button>
+          </>}>
+          <p style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 0 }}>
+            مرحلهٔ درخواست تغییر نمی‌کند؛ پرسش برای فردِ انتخاب‌شده اعلان می‌شود و تا پاسخ ندهد در کارتابلش می‌ماند.
+          </p>
+          <Field label="از چه کسی می‌پرسید؟">
+            <UserPicker value={ask.to_user_id} exclude={[user.id]} onChange={v => setAsk(a => ({ ...a, to_user_id: v }))} />
+          </Field>
+          <Field label="پرسش">
+            <textarea className="input" value={ask.comment} autoFocus
+              onChange={e => setAsk(a => ({ ...a, comment: e.target.value }))} />
+          </Field>
+        </Modal>
+      )}
+      {answer && (
+        <Modal title="پاسخ به پرسش" onClose={() => setAnswer(null)}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setAnswer(null)}>انصراف</button>
+            <button className="btn btn-primary" disabled={busy || (!answer.comment.trim() && !answer.attachments.length)} onClick={submitAnswer}>ثبت پاسخ</button>
+          </>}>
+          <div className="panel-soft card-pad" style={{ fontSize: 12.8, marginBottom: 12 }}>
+            <b>{answer.question.actor_name}:</b> {answer.question.comment}
+          </div>
+          <Field label="پاسخ">
+            <textarea className="input" value={answer.comment} autoFocus
+              onChange={e => setAnswer(a => ({ ...a, comment: e.target.value }))} />
+          </Field>
+          {req.can_attach_note && (
+            <Field label="پیوست فایل">
+              <AttachmentPicker value={answer.attachments} onChange={v => setAnswer(a => ({ ...a, attachments: v }))} />
+            </Field>
           )}
         </Modal>
       )}

@@ -116,6 +116,9 @@ export default function Cartable() {
                     {tab !== 'mine' && <td>{r.requester_name}</td>}
                     <td>
                       <span className={`badge ${sc}`}>{sl}</span>
+                      {r.open_questions > 0 && (
+                        <span className="badge badge-sky" style={{ marginRight: 6 }}>{fa(r.open_questions)} پرسش بی‌پاسخ</span>
+                      )}
                       {r.step_title && (
                         <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 6 }}>{r.step_title}</span>
                       )}

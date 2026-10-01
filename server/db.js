@@ -1201,7 +1201,22 @@ CREATE TABLE IF NOT EXISTS workflow_request_cc (
   PRIMARY KEY (request_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_wf_cc_user ON workflow_request_cc(user_id, acked_at);
+
+-- [ردیابی] چه کسی و کِی درخواست را باز کرده است (صرف دیدن، جدا از اقدام)
+CREATE TABLE IF NOT EXISTS workflow_request_views (
+  request_id INTEGER NOT NULL REFERENCES workflow_requests(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  first_seen_at TEXT DEFAULT (datetime('now')),
+  last_seen_at TEXT DEFAULT (datetime('now')),
+  view_count INTEGER DEFAULT 1,
+  PRIMARY KEY (request_id, user_id)
+);
 `);
+
+// [پرسش و پاسخ] پرسش از فردی مشخص (target_user_id) و پاسخِ وصل‌شده به آن (parent_id)
+try { db.exec('ALTER TABLE workflow_actions ADD COLUMN parent_id INTEGER'); } catch {}
+try { db.exec('ALTER TABLE workflow_actions ADD COLUMN target_user_id INTEGER'); } catch {}
+db.exec('CREATE INDEX IF NOT EXISTS idx_wf_actions_target ON workflow_actions(target_user_id, action)');
 
 // ============================================================================
 //  اطلاعیه‌ها و نامهٔ اداری
