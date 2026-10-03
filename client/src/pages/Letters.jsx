@@ -185,6 +185,7 @@ function Viewer({ id, onClose, onChanged }) {
   const { toast, users, user } = useStore();
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [ackNote, setAckNote] = useState(''); // پی‌نوشتِ «دریافت شد»
   const [referTo, setReferTo] = useState('');
   const [instruction, setInstruction] = useState('');
   const [result, setResult] = useState({});
@@ -201,8 +202,8 @@ function Viewer({ id, onClose, onChanged }) {
   const ack = async () => {
     setBusy(true);
     try {
-      const r = await api(`/letters/${id}/ack`, { method: 'POST', body: {} });
-      await load(); onChanged?.();
+      const r = await api(`/letters/${id}/ack`, { method: 'POST', body: { note: ackNote } });
+      setAckNote(''); await load(); onChanged?.();
       toast(r.pending ? `ثبت شد — ${fa(r.pending)} نفر باقی مانده‌اند` : 'دریافت شما ثبت شد');
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
@@ -226,7 +227,13 @@ function Viewer({ id, onClose, onChanged }) {
     <Modal title={`${dLabel} — ${l.subject}`} onClose={onClose} wide
       footer={<>
         <button className="btn btn-ghost" onClick={onClose}>بستن</button>
-        {data.can_ack && <button className="btn btn-primary" disabled={busy} onClick={ack}><Check size={16} /> دریافت شد</button>}
+        {data.can_ack && (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input className="input" style={{ minWidth: 200, flex: 1 }} value={ackNote} maxLength={500}
+              placeholder="پی‌نوشت (اختیاری)" onChange={e => setAckNote(e.target.value)} />
+            <button className="btn btn-primary" disabled={busy} onClick={ack}><Check size={16} /> دریافت شد</button>
+          </div>
+        )}
       </>}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
         <span className={`badge ${dCls}`}>{dLabel}</span>
@@ -269,6 +276,7 @@ function Viewer({ id, onClose, onChanged }) {
                 {rc.full_name}
                 <span className="badge badge-gray" style={{ marginInlineStart: 6 }}>{rc.kind === 'cc' ? 'رونوشت' : 'گیرنده'}</span>
                 {rc.department_name && <span style={{ color: 'var(--text-3)' }}> · {rc.department_name}</span>}
+                {rc.note && <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>پی‌نوشت: {rc.note}</div>}
               </span>
               {rc.acked_at
                 ? <span className="badge badge-green" title={rc.note || ''}><Check size={11} /> {fmtRelative(rc.acked_at)}</span>

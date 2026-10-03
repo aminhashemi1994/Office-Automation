@@ -555,9 +555,30 @@ function TemplateModal({ tpl, onClose, onDone }) {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '18px 0 10px' }}>
         <b>مراحل تایید (سلسله‌مراتب)</b>
+        <span style={{ display: 'flex', gap: 6 }}>
+        {/* برای فرم‌هایی مثل «برگهٔ حوادث روزانه» که همهٔ مدیران باید به‌ترتیب امضا کنند */}
+        <button className="btn btn-ghost btn-sm" title="برای مدیرِ هر واحد یک مرحلهٔ تایید با امضا اضافه می‌شود"
+          onClick={() => {
+            const seen = new Set(steps.filter(s => s.approver_type === 'user').map(s => Number(s.approver_id)));
+            const add = [];
+            for (const d of departments) {
+              for (const m of (d.directors?.length ? d.directors : d.heads || [])) {
+                if (seen.has(m.id)) continue;
+                seen.add(m.id);
+                add.push({ title: `تایید و امضای ${m.full_name} (${d.name})`, approver_type: 'user', approver_id: m.id,
+                  deadline_hours: 24, alt_approvers: [], requires_signature: 1, allow_attachments: 1 });
+              }
+            }
+            if (!add.length) return toast('مدیر تازه‌ای برای افزودن پیدا نشد', 'error');
+            setSteps(s => [...s, ...add]);
+            toast(`${fa(add.length)} مرحله برای مدیران اضافه شد — ترتیب را در صورت نیاز تغییر دهید`);
+          }}>
+          <Plus size={14} /> امضای همهٔ مدیران
+        </button>
         <button className="btn btn-ghost btn-sm" onClick={() => setSteps(s => [...s, { title: '', approver_type: 'requester_manager', deadline_hours: 24, alt_approvers: [], requires_signature: 1, allow_attachments: 1 }])}>
           <Plus size={14} /> مرحله
         </button>
+        </span>
       </div>
       {steps.map((s, i) => (
         <div key={i} className="card-pad panel-soft" style={{ marginBottom: 10 }}>

@@ -23,6 +23,7 @@ const ACTION_LABEL = {
   edit: ['ویرایش کرد', 'badge-amber'],
   return: ['برگشت داد', 'badge-red'],
   ack: ['دریافت شد', 'badge-green'],
+  receive: ['دریافت کرد', 'badge-sky'],
   question: ['پرسش', 'badge-sky'],
   answer: ['پاسخ', 'badge-primary'],
 };
@@ -46,6 +47,7 @@ export default function RequestDetail() {
   const [confirmDel, setConfirmDel] = useState(false);
   const [ask, setAsk] = useState(null);          // {to_user_id, comment} — پرسش از یک فرد
   const [answer, setAnswer] = useState(null);    // {question, comment, attachments} — پاسخ به پرسش
+  const [ackNote, setAckNote] = useState('');    // پی‌نوشتِ «دریافت شد» (رونوشت یا مرحله)
 
   const load = async () => {
     try {
@@ -127,9 +129,19 @@ export default function RequestDetail() {
   const ackCc = async () => {
     setBusy(true);
     try {
-      const r = await api(`/workflows/requests/${id}/ack`, { method: 'POST', body: {} });
-      await load();
+      const r = await api(`/workflows/requests/${id}/ack`, { method: 'POST', body: { note: ackNote } });
+      setAckNote(''); await load();
       toast(r.pending ? `ثبت شد — ${r.pending.toLocaleString('fa-IR')} نفر دیگر باقی مانده‌اند` : 'دریافت شما ثبت شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
+  // [دریافت مرحله‌ای] مسئولِ مرحلهٔ فعلی اعلام می‌کند درخواست را دریافت کرده است
+  const receive = async () => {
+    setBusy(true);
+    try {
+      await api(`/workflows/requests/${id}/receive`, { method: 'POST', body: { note: ackNote } });
+      setAckNote(''); await load(); toast('دریافت شما ثبت شد');
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
   };
@@ -295,6 +307,8 @@ export default function RequestDetail() {
               شما تاییدکنندهٔ این درخواست نیستید و لازم نیست کاری انجام دهید؛ فقط اعلام کنید که آن را دیده‌اید.
             </div>
           </div>
+          <input className="input" style={{ minWidth: 180, flex: 1 }} value={ackNote} maxLength={500}
+            placeholder="پی‌نوشت (اختیاری)" onChange={e => setAckNote(e.target.value)} />
           <button className="btn btn-primary" disabled={busy} onClick={ackCc}>
             <Check size={16} /> دریافت شد
           </button>
@@ -420,6 +434,43 @@ export default function RequestDetail() {
               }} />
           </div>
 
+          {/* [ردیابی مرحله] کار الان روی میزِ کیست و آیا دیده/دریافت کرده است */}
+          {req.step_watch && (
+            <div className="card card-pad" style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                <Clock size={15} /><b style={{ fontSize: 13.5 }}>وضعیت مرحلهٔ فعلی: {req.step_watch.step_title}</b>
+                {req.step_watch.since && (
+                  <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>از {fmtDateTime(req.step_watch.since)}</span>
+                )}
+              </div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {req.step_watch.people.map(p => (
+                  <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+                    <Avatar name={p.full_name} color={p.avatar_color} size={24} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {p.full_name}
+                      {p.received_note && <div style={{ fontSize: 11.8, color: 'var(--text-2)' }}>پی‌نوشت: {p.received_note}</div>}
+                    </div>
+                    {p.received_at
+                      ? <span className="badge badge-green"><Check size={11} /> دریافت کرد — {fmtDateTime(p.received_at)}</span>
+                      : p.seen_at
+                      ? <span className="badge badge-sky"><Eye size={11} /> دیده — {fmtDateTime(p.seen_at)}</span>
+                      : <span className="badge badge-gray">هنوز ندیده</span>}
+                  </div>
+                ))}
+              </div>
+              {req.can_receive && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-soft)', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <input className="input" style={{ minWidth: 180, flex: 1 }} value={ackNote} maxLength={500}
+                    placeholder="پی‌نوشت (اختیاری)" onChange={e => setAckNote(e.target.value)} />
+                  <button className="btn btn-primary" disabled={busy} onClick={receive}>
+                    <Check size={16} /> دریافت شد
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* [ردیابی] چه کسانی درخواست را دیده‌اند و آخرین اقدامشان */}
           {req.views?.length > 0 && (
             <div className="card card-pad" style={{ marginBottom: 18 }}>
@@ -468,6 +519,7 @@ export default function RequestDetail() {
                     <span style={{ flex: 1 }}>
                       {c.full_name}
                       {c.department_name && <span style={{ color: 'var(--text-3)' }}> · {c.department_name}</span>}
+                      {c.note && <div style={{ fontSize: 11.8, color: 'var(--text-2)' }}>پی‌نوشت: {c.note}</div>}
                     </span>
                     {c.acked_at
                       ? <span className="badge badge-green" title={c.note || ''}>
@@ -480,16 +532,6 @@ export default function RequestDetail() {
                   </div>
                 ))}
               </div>
-              {req.can_ack && (
-                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-soft)' }}>
-                  <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 8px', lineHeight: 1.85 }}>
-                    این نامه به‌صورت رونوشت برای شما آمده است. شما تاییدکننده نیستید؛ فقط اعلام کنید که دیده‌اید.
-                  </p>
-                  <button className="btn btn-primary" disabled={busy} onClick={ackCc}>
-                    <Check size={16} /> دریافت شد
-                  </button>
-                </div>
-              )}
             </div>
           )}
 

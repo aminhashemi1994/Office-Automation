@@ -122,6 +122,13 @@ export default function Cartable() {
                       {r.step_title && (
                         <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 6 }}>{r.step_title}</span>
                       )}
+                      {/* [ردیابی مرحله] مسئولِ مرحلهٔ فعلی دیده / دریافت کرده؟ */}
+                      {r.step_watch && (
+                        <span className={`badge ${r.step_watch.received ? 'badge-green' : r.step_watch.seen ? 'badge-sky' : 'badge-gray'}`}
+                          style={{ marginRight: 6 }}>
+                          {r.step_watch.received ? 'دریافت شد' : r.step_watch.seen ? 'دیده شد' : 'هنوز ندیده'}
+                        </span>
+                      )}
                     </td>
                     <td>
                       {r.status === 'in_progress' && r.step_due_at ? (

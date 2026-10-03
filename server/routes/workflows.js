@@ -505,6 +505,32 @@ function stepDueAt(step) {
   return new Date(Date.now() + step.deadline_hours * 3600 * 1000).toISOString();
 }
 
+// [ردیابی مرحله] مسئولانِ مرحلهٔ فعلی از وقتی درخواست به این مرحله رسیده، آن را دیده‌اند؟ «دریافت شد» زده‌اند؟
+// زمانِ ورود به مرحله = آخرین اقدامی که مرحله را جابه‌جا کرده است.
+const STEP_MOVES = ['submit', 'approve', 'skip', 'return'];
+function stepEnteredAt(requestId) {
+  return db.prepare(`SELECT created_at FROM workflow_actions WHERE request_id = ?
+    AND action IN (${STEP_MOVES.map(() => '?').join(',')}) ORDER BY id DESC LIMIT 1`)
+    .get(requestId, ...STEP_MOVES)?.created_at || '';
+}
+function currentStepWatch(rq) {
+  if (rq.status !== 'in_progress') return null;
+  const step = currentStepOf(rq);
+  if (!step) return null;
+  const since = stepEnteredAt(rq.id);
+  const seenQ = db.prepare('SELECT last_seen_at FROM workflow_request_views WHERE request_id = ? AND user_id = ? AND last_seen_at >= ?');
+  const recvQ = db.prepare(`SELECT created_at, comment FROM workflow_actions WHERE request_id = ? AND actor_id = ?
+    AND step_order = ? AND action = 'receive' AND created_at >= ? ORDER BY id DESC LIMIT 1`);
+  const people = resolveApprovers(step, rq.requester_id).map(uid => {
+    const u = db.prepare('SELECT id, full_name, avatar_color FROM users WHERE id = ?').get(uid);
+    const recv = recvQ.get(rq.id, uid, rq.current_step, since);
+    return { ...u, seen_at: seenQ.get(rq.id, uid, since)?.last_seen_at || null,
+      received_at: recv?.created_at || null, received_note: recv?.comment || '' };
+  }).filter(p => p.id);
+  return { step_title: step.title, since, people,
+    seen: people.some(p => p.seen_at), received: people.some(p => p.received_at) };
+}
+
 function requestDetail(id, userId) {
   const req_ = db.prepare(`
     SELECT r.*, t.name AS template_name, t.form_schema, t.requester_signature,
@@ -524,7 +550,7 @@ function requestDetail(id, userId) {
       has_approvers: stepHasApprovers(s, req_.requester_id),
       // شمارِ یادداشت‌های ثبت‌شده روی همین مرحله — برای نمایش روی نمودار
       comment_count: db.prepare(`SELECT COUNT(*) c FROM workflow_actions
-        WHERE request_id = ? AND step_order = ? AND action IN ('comment', 'ack')`).get(req_.id, s.step_order).c,
+        WHERE request_id = ? AND step_order = ? AND action IN ('comment', 'ack', 'receive')`).get(req_.id, s.step_order).c,
     };
   });
   // requires_signature هر اقدام از روی مرحلهٔ متناظرِ *همین درخواست* تعیین می‌شود.
@@ -592,8 +618,10 @@ function requestDetail(id, userId) {
       const la = lastAction.get(v.user_id);
       return { ...v, last_action: la ? { action: la.action, created_at: la.created_at } : null };
     });
+  const step_watch = currentStepWatch(req_);
   return {
-    views, open_questions,
+    views, open_questions, step_watch,
+    can_receive: can_act && !!step_watch && !step_watch.people.find(p => p.id === userId)?.received_at,
     my_open_questions: open_questions.filter(q => q.target_user_id === userId).map(q => q.id),
     ...req_, steps, actions, files, can_attach_action, can_attach_note,
     request_attachments: reqAtt,
@@ -1037,6 +1065,39 @@ r.post('/requests/:id/ack', (req, res) => {
   res.json({ ok: true, pending });
 });
 
+// خلاصهٔ وضعیتِ مرحلهٔ فعلی برای فهرست‌ها: seen | received | null (دیده‌نشده)
+function watchSummary(rq) {
+  const w = currentStepWatch(rq);
+  if (!w) return null;
+  return { seen: w.seen, received: w.received };
+}
+
+// [دریافت مرحله‌ای] مسئولِ مرحلهٔ فعلی اعلام می‌کند درخواست را دریافت کرده (با پی‌نوشتِ اختیاری).
+// مرحله تغییر نمی‌کند؛ فقط درخواست‌دهنده در جریان قرار می‌گیرد که کار روی میزِ چه کسی است.
+r.post('/requests/:id/receive', (req, res) => {
+  const rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  if (rq.status !== 'in_progress') return res.status(400).json({ error: 'این درخواست در جریان نیست' });
+  const step = currentStepOf(rq);
+  if (!step || !resolveApprovers(step, rq.requester_id).includes(req.user.id)) {
+    return res.status(403).json({ error: 'شما مسئول مرحلهٔ فعلی این درخواست نیستید' });
+  }
+  const w = currentStepWatch(rq);
+  if (w?.people.find(p => p.id === req.user.id)?.received_at) return res.json({ ok: true, already: true });
+  const note = String(req.body?.note || '').trim().slice(0, 500);
+  db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, ?, ?, ?, ?)')
+    .run(rq.id, rq.current_step, req.user.id, 'receive', note);
+  if (rq.requester_id !== req.user.id) {
+    notifyUsers([rq.requester_id], {
+      type: 'workflow',
+      title: 'درخواست شما دریافت شد',
+      body: `${req.user.full_name} «${rq.title}» را در مرحلهٔ «${step.title}» دریافت کرد${note ? ' — ' + note.slice(0, 120) : ''}`,
+      link: `/cartable/${rq.id}`,
+    });
+  }
+  res.json({ ok: true });
+});
+
 // ---------- requests ----------
 r.post('/requests', (req, res) => {
   const { template_id, title, form_data = {} } = req.body || {};
@@ -1176,7 +1237,7 @@ r.get('/requests/mine', (req, res) => {
     SELECT r.*, t.name AS template_name FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
     WHERE r.requester_id = ? ORDER BY r.id DESC`).all(req.user.id)
-    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq) }));
+    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq), step_watch: watchSummary(rq) }));
   res.json({ requests });
 });
 
@@ -1213,6 +1274,7 @@ r.get('/requests/all', (req, res) => {
     ...rq,
     step_title: stepLabelOf(rq),
     attachments_count: attachmentCount(rq),
+    step_watch: watchSummary(rq),
   }));
   res.json({ requests, scoped: !canAccessEverywhere(u) });
 });

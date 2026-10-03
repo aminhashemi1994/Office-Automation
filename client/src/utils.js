@@ -81,7 +81,7 @@ export function initials(name = '') {
 
 const ACTION_FA = {
   submit: 'ثبت درخواست', approve: 'تایید', reject: 'رد', skip: 'عبور (اختیاری)', comment: 'یادداشت',
-  edit: 'ویرایش', return: 'برگشت', ack: 'دریافت رونوشت',
+  edit: 'ویرایش', return: 'برگشت', ack: 'دریافت رونوشت', receive: 'دریافت شد',
 };
 
 function esc(s) {
