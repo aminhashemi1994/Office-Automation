@@ -81,8 +81,11 @@ r.get('/users', (req, res) => {
     FROM users u LEFT JOIN departments d ON d.id = u.department_id
     ORDER BY u.full_name`).all();
   // واحدهایی که هر کاربر مدیرشان است (جدول چندمدیره)
-  const mgr = db.prepare('SELECT department_id FROM department_managers WHERE user_id = ?');
-  for (const u of users) u.managed_dept_ids = mgr.all(u.id).map(r => r.department_id);
+  const mgr = db.prepare('SELECT department_id, position FROM department_managers WHERE user_id = ?');
+  for (const u of users) {
+    u.managed_roles = mgr.all(u.id); // [{department_id, position: head|director}]
+    u.managed_dept_ids = [...new Set(u.managed_roles.map(r => r.department_id))];
+  }
   res.json({ users });
 });
 
@@ -153,16 +156,27 @@ r.delete('/users/:id/avatar', (req, res) => {
   res.json({ ok: true });
 });
 
-// همگام‌سازی واحدهایی که این کاربر مدیرشان است (جدول چندمدیره)
-function syncManagedDepts(userId, deptIds) {
-  if (!Array.isArray(deptIds)) return;
+// همگام‌سازی سِمَت‌های این کاربر در واحدها (سرگروه / مدیر واحد).
+// roles: [{department_id, position}] — اگر فقط deptIds آمده باشد (رابط قدیمی)،
+// سِمَتِ فعلیِ هر واحد حفظ می‌شود و واحدِ تازه «سرگروه» ثبت می‌شود.
+function syncManagedDepts(userId, deptIds, roles) {
+  let list;
+  if (Array.isArray(roles)) {
+    list = roles.map(x => ({ d: Number(x?.department_id), p: x?.position === 'director' ? 'director' : 'head' }));
+  } else if (Array.isArray(deptIds)) {
+    const prev = db.prepare('SELECT department_id, position FROM department_managers WHERE user_id = ?').all(userId);
+    list = deptIds.map(Number).flatMap(d => {
+      const keep = prev.filter(x => x.department_id === d);
+      return keep.length ? keep.map(x => ({ d, p: x.position })) : [{ d, p: 'head' }];
+    });
+  } else return;
   db.prepare('DELETE FROM department_managers WHERE user_id = ?').run(userId);
-  const ins = db.prepare('INSERT OR IGNORE INTO department_managers (department_id, user_id) VALUES (?, ?)');
-  for (const did of deptIds) { const n = Number(did); if (n) ins.run(n, userId); }
+  const ins = db.prepare('INSERT OR IGNORE INTO department_managers (department_id, user_id, position) VALUES (?, ?, ?)');
+  for (const { d, p } of list) if (d) ins.run(d, userId, p);
 }
 
 r.post('/users', requirePerm('users.manage'), (req, res) => {
-  const { username, password, full_name, role = 'employee', department_id = null, position = '', phone = '', email = '', permissions = [], managed_dept_ids } = req.body || {};
+  const { username, password, full_name, role = 'employee', department_id = null, position = '', phone = '', email = '', permissions = [], managed_dept_ids, managed_roles } = req.body || {};
   if (!username || !password || !full_name) return res.status(400).json({ error: 'نام کاربری، رمز عبور و نام کامل الزامی است' });
   if (db.prepare('SELECT id FROM users WHERE username = ?').get(username)) {
     return res.status(400).json({ error: 'این نام کاربری قبلاً ثبت شده است' });
@@ -176,7 +190,7 @@ r.post('/users', requirePerm('users.manage'), (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     String(username).trim(), bcrypt.hashSync(String(password), 10), full_name, role,
     department_id || null, position, phone, email, color, JSON.stringify(permissions));
-  syncManagedDepts(result.lastInsertRowid, managed_dept_ids);
+  syncManagedDepts(result.lastInsertRowid, managed_dept_ids, managed_roles);
   res.json({ id: result.lastInsertRowid });
 });
 
@@ -211,14 +225,14 @@ r.delete('/users/:id', requirePerm('users.manage'), (req, res) => {
 r.put('/users/:id', requirePerm('users.manage'), (req, res) => {
   const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
   if (!u) return res.status(404).json({ error: 'کاربر یافت نشد' });
-  const { full_name, role, department_id, position, phone, email, is_active, password, permissions, managed_dept_ids } = req.body || {};
+  const { full_name, role, department_id, position, phone, email, is_active, password, permissions, managed_dept_ids, managed_roles } = req.body || {};
   db.prepare(`UPDATE users SET full_name = ?, role = ?, department_id = ?, position = ?, phone = ?, email = ?, is_active = ?, permissions = ? WHERE id = ?`)
     .run(full_name ?? u.full_name, role ?? u.role, department_id !== undefined ? department_id : u.department_id,
       position ?? u.position, phone ?? u.phone, email ?? u.email,
       is_active !== undefined ? (is_active ? 1 : 0) : u.is_active,
       permissions !== undefined ? JSON.stringify(permissions) : u.permissions, u.id);
   if (password) db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(String(password), 10), u.id);
-  if (managed_dept_ids !== undefined) syncManagedDepts(u.id, managed_dept_ids);
+  if (managed_dept_ids !== undefined || managed_roles !== undefined) syncManagedDepts(u.id, managed_dept_ids, managed_roles);
   res.json({ ok: true });
 });
 

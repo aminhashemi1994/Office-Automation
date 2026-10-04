@@ -282,7 +282,7 @@ const TITLES = {
 const fmtBadge = (n) => (n > 99 ? '۹۹+' : Number(n).toLocaleString('fa-IR'));
 
 function Layout({ children }) {
-  const { user, logout, unreadNotifs, hasPerm, departments, settings, theme, toggleTheme, cartableCount, taskCount, taskCommentCount, chatUnread } = useStore();
+  const { user, logout, unreadNotifs, hasPerm, departments, settings, theme, toggleTheme, cartableCount, taskCount, taskCommentCount, chatUnread, on } = useStore();
   const [notifOpen, setNotifOpen] = useState(false);
   const [agendaOpen, setAgendaOpen] = useState(false);
   // نشانِ کنار منو: اطلاعیهٔ نخوانده و نامهٔ نیازمند اقدام
@@ -302,7 +302,8 @@ function Layout({ children }) {
     };
     refresh();
     const id = setInterval(refresh, 120000);
-    return () => clearInterval(id);
+    const off = on('notification', refresh); // اطلاعیه/نامهٔ تازه بلافاصله روی نشانِ منو بیاید
+    return () => { clearInterval(id); off?.(); };
   }, [location.pathname]);
 
   // بستن پنل اعلان‌ها با کلیک بیرون از آن

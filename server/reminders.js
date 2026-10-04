@@ -119,6 +119,60 @@ function checkTaskAndStepReminders() {
   }
 }
 
+// [یادآوری روزانهٔ فرآیند] مثلاً «برگهٔ حوادث روزانه»: هر روز در ساعتِ تعیین‌شده (به وقت تهران)
+// به واحدها/افرادِ انتخاب‌شده یادآوری می‌شود و مسئولانِ درخواست‌های بازِ همین فرآیند هم خبر می‌گیرند.
+function tehranNow() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short',
+  }).formatToParts(new Date()).map(p => [p.type, p.value]));
+  const wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday);
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}`, weekday: wd };
+}
+
+export function checkDailyWorkflowReminders() {
+  const now = tehranNow();
+  const tpls = db.prepare(`SELECT * FROM workflow_templates WHERE is_active = 1
+    AND daily_reminder IS NOT NULL AND daily_reminder != ''`).all();
+  for (const t of tpls) {
+    let cfg; try { cfg = JSON.parse(t.daily_reminder); } catch { continue; }
+    if (!cfg?.enabled || t.reminder_last_sent === now.date) continue;
+    if (cfg.days?.length && !cfg.days.includes(now.weekday)) continue;
+    if (now.time < (cfg.time || '08:00')) continue;
+    // اول علامت بزن تا در صورت خطا، اعلانِ تکراری نرود
+    db.prepare('UPDATE workflow_templates SET reminder_last_sent = ? WHERE id = ?').run(now.date, t.id);
+    try {
+      const ids = new Set((cfg.user_ids || []).map(Number));
+      if (cfg.dept_ids?.length) {
+        const ph = cfg.dept_ids.map(() => '?').join(',');
+        for (const u of db.prepare(`SELECT id FROM users WHERE is_active = 1 AND department_id IN (${ph})`).all(...cfg.dept_ids)) ids.add(u.id);
+      }
+      if (ids.size) {
+        notifyUsers([...ids], {
+          type: 'reminder',
+          title: `🔔 یادآوری روزانه: ${t.name}`,
+          body: `«${t.name}» امروز باید ثبت و تایید شود`,
+          link: '/cartable',
+        });
+      }
+      // مسئولانِ مرحلهٔ فعلیِ درخواست‌های بازِ همین فرآیند
+      if (cfg.approvers !== 0) {
+        const open = db.prepare("SELECT * FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").all(t.id);
+        for (const rq of open) {
+          const step = currentStepOfRequest(rq);
+          if (!step) continue;
+          notifyUsers(resolveApprovers(step, rq.requester_id).filter(id => !ids.has(id)), {
+            type: 'reminder',
+            title: `🔔 در انتظار تایید شما: ${t.name}`,
+            body: `«${rq.title}» در مرحلهٔ «${step.title}» منتظر تایید شماست`,
+            link: `/cartable/${rq.id}`,
+          });
+        }
+      }
+    } catch (e) { console.error('daily reminder error:', e.message); }
+  }
+}
+
 // اطلاعیه‌های زمان‌بندی‌شده: وقتی زمانشان رسید، اعلانشان یک‌بار فرستاده می‌شود.
 // ستون publish_at بعد از ارسال خالی می‌شود تا دوباره اعلام نشود.
 function checkScheduledAnnouncements() {
@@ -271,9 +325,83 @@ function checkTicketDeadlines() {
   }
 }
 
+// ============================================================================
+//  زمان‌بندِ دقیق (بدون نظرسنجیِ مداوم)
+//  به‌جای اینکه هر چند ثانیه همهٔ جدول‌ها گشته شوند، فقط «نزدیک‌ترین زمانِ سررسید»
+//  با چند پرس‌وجوی MIN روی ستون‌های ایندکس‌دار پیدا می‌شود و یک setTimeout دقیقاً
+//  برای همان لحظه تنظیم می‌شود. هر تغییری در یادآوری‌ها (ثبت/ویرایش) زمان‌بند را
+//  دوباره تنظیم می‌کند (rescheduleExact). در حالت بیکار هیچ کاری انجام نمی‌شود.
+// ============================================================================
+const MAX_SLEEP = 6 * HOUR;          // حداکثر خواب — محض احتیاط یک بازبینیِ دوره‌ای
+const TEHRAN_OFFSET = 3.5 * HOUR;    // ایران از ۱۴۰۱ ساعت تابستانی ندارد
+let exactTimer = null;
+let lastFireAt = 0;
+let rescheduleSoon = null;
+
+// نزدیک‌ترین وقوعِ بعدیِ یادآوری روزانهٔ یک فرآیند (میلی‌ثانیه)
+function nextDailyAt(t, cfg, now) {
+  const today = tehranNow();
+  const [y, m, d] = today.date.split('-').map(Number);
+  const [hh, mm] = String(cfg.time || '08:00').split(':').map(Number);
+  for (let k = 0; k < 8; k++) {
+    const wd = new Date(Date.UTC(y, m - 1, d + k)).getUTCDay();
+    if (cfg.days?.length && !cfg.days.includes(wd)) continue;
+    if (k === 0 && t.reminder_last_sent === today.date) continue;
+    const at = Date.UTC(y, m - 1, d + k, hh, mm) - TEHRAN_OFFSET;
+    return k === 0 ? Math.max(at, now) : at;
+  }
+  return null;
+}
+
+function nextDueAt() {
+  const now = Date.now();
+  const ms = (v) => { const x = v ? new Date(v).getTime() : NaN; return Number.isNaN(x) ? null : x; };
+  const cands = [
+    db.prepare("SELECT MIN(remind_at) v FROM notes WHERE remind_at > '' AND reminded = 0 AND done = 0").get()?.v,
+    db.prepare("SELECT MIN(remind_at) v FROM tasks WHERE remind_at > '' AND reminded = 0 AND status != 'done'").get()?.v,
+    db.prepare("SELECT MIN(remind_at) v FROM task_steps WHERE remind_at > '' AND reminded = 0 AND done = 0").get()?.v,
+    db.prepare(`SELECT MIN(publish_at) v FROM announcements WHERE is_active = 1 AND publish_at > ''
+      AND (expires_at IS NULL OR expires_at = '' OR datetime(expires_at) >= datetime('now'))`).get()?.v,
+  ].map(ms);
+  for (const t of db.prepare(`SELECT id, daily_reminder, reminder_last_sent FROM workflow_templates
+      WHERE is_active = 1 AND daily_reminder LIKE '%"enabled":1%'`).all()) {
+    let cfg; try { cfg = JSON.parse(t.daily_reminder); } catch { continue; }
+    cands.push(nextDailyAt(t, cfg, now));
+  }
+  // موردی که در آخرین اجرا هم سررسیده بود (مثلاً داده‌ای خراب) نباید حلقهٔ داغ بسازد؛
+  // آن را بازبینیِ دوره‌ای پوشش می‌دهد.
+  const next = cands.filter(x => x !== null && x > lastFireAt);
+  return next.length ? Math.min(...next) : null;
+}
+
+function fireExact() {
+  exactTimer = null;
+  lastFireAt = Date.now();
+  try { checkNoteReminders(); checkTaskAndStepReminders(); checkScheduledAnnouncements(); checkDailyWorkflowReminders(); }
+  catch (e) { console.error('exact reminder error:', e); }
+  armExact();
+}
+
+function armExact() {
+  if (exactTimer) clearTimeout(exactTimer);
+  let at = null;
+  try { at = nextDueAt(); } catch (e) { console.error('reminder schedule error:', e.message); }
+  const delay = at === null ? MAX_SLEEP : Math.min(Math.max(at - Date.now(), 0), MAX_SLEEP);
+  exactTimer = setTimeout(fireExact, delay);
+  exactTimer.unref?.();
+}
+
+// پس از هر تغییرِ مرتبط صدا زده می‌شود؛ چند تغییرِ پشت‌سرهم یک بار محاسبه می‌شوند
+export function rescheduleExact() {
+  if (rescheduleSoon) return;
+  rescheduleSoon = setTimeout(() => { rescheduleSoon = null; armExact(); }, 300);
+  rescheduleSoon.unref?.();
+}
+
 export function startReminderEngine() {
+  // کارهای «دقیق‌زمان» با زمان‌بندِ بالا؛ این حلقه فقط برای مهلت‌ها و CRM است که دقیقه‌ای حساس نیستند
   const tick = () => {
-    try { checkWorkflowDeadlines(); checkTaskDeadlines(); checkNoteReminders(); checkTaskAndStepReminders(); checkScheduledAnnouncements(); }
+    try { checkWorkflowDeadlines(); checkTaskDeadlines(); }
     catch (e) { console.error('reminder engine error:', e); }
     // خطای CRM نباید یادآوری‌های اصلی سامانه را متوقف کند
     try { checkCrmFollowUps(); checkTenderDeadlines(); checkTicketDeadlines(); }
@@ -283,4 +411,6 @@ export function startReminderEngine() {
   };
   setTimeout(tick, 10 * 1000);
   setInterval(tick, 5 * 60 * 1000);
+  // اجرای اول: هرچه در زمانِ خاموش‌بودنِ سرور سررسیده، همین حالا فرستاده شود
+  setTimeout(fireExact, 5 * 1000);
 }

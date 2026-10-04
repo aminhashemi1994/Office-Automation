@@ -191,7 +191,9 @@ function UserModal({ user: u, departments, onClose, onDone }) {
     position: u?.position || '', phone: u?.phone || '', email: u?.email || '',
     is_active: u ? !!u.is_active : true,
     permissions: (() => { try { return JSON.parse(u?.permissions || '[]'); } catch { return []; } })(),
-    managed_dept_ids: Array.isArray(u?.managed_dept_ids) ? u.managed_dept_ids : [],
+    // سِمَت‌های کاربر در واحدها: [{department_id, position: head|director}]
+    managed_roles: Array.isArray(u?.managed_roles) ? u.managed_roles
+      : (u?.managed_dept_ids || []).map(d => ({ department_id: d, position: 'head' })),
   });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
@@ -200,7 +202,7 @@ function UserModal({ user: u, departments, onClose, onDone }) {
     setBusy(true);
     try {
       const body = { ...f, department_id: f.department_id ? Number(f.department_id) : null,
-        managed_dept_ids: f.managed_dept_ids.map(Number) };
+        managed_roles: f.managed_roles.map(x => ({ department_id: Number(x.department_id), position: x.position })) };
       if (!body.password) delete body.password;
       if (u) await api(`/users/${u.id}`, { method: 'PUT', body });
       else await api('/users', { method: 'POST', body });
@@ -270,17 +272,23 @@ function UserModal({ user: u, departments, onClose, onDone }) {
         <Field label="تلفن"><input className="input" value={f.phone} onChange={e => set('phone', e.target.value)} dir="ltr" style={{ textAlign: 'left' }} /></Field>
         <Field label="ایمیل"><input className="input" value={f.email} onChange={e => set('email', e.target.value)} dir="ltr" style={{ textAlign: 'left' }} /></Field>
       </div>
-      <Field label="مدیرِ کدام واحدها؟ (دسترسی کامل به آن واحدها)"
-        hint="کاربر روی واحدهای انتخاب‌شده مدیر محسوب می‌شود؛ درخواست‌ها و اعضای همان واحدها را می‌بیند و در گردش‌کار «سرگروه واحد» به‌حساب می‌آید.">
+      <Field label="سرگروه یا مدیرِ کدام واحدها؟"
+        hint="با هر کلیک روی واحد، سِمَت عوض می‌شود: سرگروه ← مدیر واحد ← هر دو ← هیچ. هر واحد می‌تواند یک مدیر و یک سرگروه جدا داشته باشد.">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {departments.map(d => {
-            const on = f.managed_dept_ids.map(Number).includes(d.id);
+            const pos = f.managed_roles.filter(x => Number(x.department_id) === d.id).map(x => x.position);
+            const head = pos.includes('head'), dir = pos.includes('director');
+            const label = head && dir ? 'سرگروه و مدیر' : dir ? 'مدیر واحد' : head ? 'سرگروه' : '';
+            // چرخه: هیچ ← سرگروه ← مدیر ← هر دو ← هیچ
+            const next = !head && !dir ? ['head'] : head && !dir ? ['director'] : !head && dir ? ['head', 'director'] : [];
             return (
-              <button key={d.id} type="button" className={`btn btn-sm ${on ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => set('managed_dept_ids', on
-                  ? f.managed_dept_ids.filter(x => Number(x) !== d.id)
-                  : [...f.managed_dept_ids, d.id])}>
-                {d.name}
+              <button key={d.id} type="button" className={`btn btn-sm ${dir ? 'btn-primary' : 'btn-ghost'}`}
+                style={head && !dir ? { border: '1.5px solid var(--primary)' } : undefined}
+                onClick={() => set('managed_roles', [
+                  ...f.managed_roles.filter(x => Number(x.department_id) !== d.id),
+                  ...next.map(p => ({ department_id: d.id, position: p })),
+                ])}>
+                {d.name}{label && <span style={{ fontSize: 11, opacity: 0.85 }}> · {label}</span>}
               </button>
             );
           })}

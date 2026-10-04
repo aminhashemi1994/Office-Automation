@@ -860,6 +860,21 @@ function templateExtras(body, prev = {}) {
   };
 }
 
+// [یادآوری روزانه] پاک‌سازی و ذخیرهٔ تنظیمات
+function saveDailyReminder(templateId, v) {
+  if (v === undefined) return;
+  const ids = (a) => (Array.isArray(a) ? a : []).map(Number).filter(Boolean);
+  const clean = v && typeof v === 'object' ? {
+    enabled: v.enabled ? 1 : 0,
+    time: /^\d{1,2}:\d{2}$/.test(String(v.time || '')) ? String(v.time).padStart(5, '0') : '08:00',
+    days: (Array.isArray(v.days) ? v.days : []).map(Number).filter(d => d >= 0 && d <= 6),
+    dept_ids: ids(v.dept_ids), user_ids: ids(v.user_ids),
+    approvers: v.approvers === 0 || v.approvers === false ? 0 : 1,
+  } : null;
+  db.prepare('UPDATE workflow_templates SET daily_reminder = ? WHERE id = ?')
+    .run(clean ? JSON.stringify(clean) : '', templateId);
+}
+
 r.post('/templates', (req, res) => {
   if (!canBuildWorkflows(req.user)) return res.status(403).json({ error: 'شما مجاز به تعریف فرآیند نیستید' });
   const { name, description = '', title_placeholder = '', form_schema = [], steps = [],
@@ -884,6 +899,7 @@ r.post('/templates', (req, res) => {
       ex.owner_dept_id ?? req.user.department_id ?? null,
       ex.allow_on_behalf, ex.cc_mode, ex.cc_require_ack);
   insertSteps(result.lastInsertRowid, steps);
+  saveDailyReminder(result.lastInsertRowid, req.body?.daily_reminder);
   res.json({ id: result.lastInsertRowid });
 });
 
@@ -913,6 +929,7 @@ r.put('/templates/:id', (req, res) => {
       ex.final_task_assignee_type, ex.final_task_assignee_id, ex.final_task_deadline_hours, ex.final_task_notify,
       ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map,
       ex.past_days_limit, ex.owner_dept_id, ex.allow_on_behalf, ex.cc_mode, ex.cc_require_ack, t.id);
+  saveDailyReminder(t.id, req.body?.daily_reminder);
   if (steps) {
     const hasOpen = db.prepare("SELECT 1 FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").get(t.id);
     if (hasOpen) return res.status(400).json({ error: 'تا زمانی که درخواست در جریان دارد، مراحل قابل تغییر نیست' });
@@ -1221,14 +1238,20 @@ r.get('/requests/inbox', (req, res) => {
     for (const rq of extra) if (!have.has(rq.id)) inbox.push(rq);
     inbox.sort((a, b) => b.id - a.id);
   }
-  const result = inbox.map(rq => ({
+  const result = inbox.map(rq => {
+    // [تایید سریع] اگر من مسئولِ مرحلهٔ فعلی‌ام، از همین کارتابل می‌توانم تایید (و امضا) کنم
+    const cur = rq.status === 'in_progress' && have.has(rq.id) ? currentStepOf(rq) : null;
+    const mine = !!cur && resolveApprovers(cur, rq.requester_id).includes(req.user.id);
+    return {
     ...rq,
+    can_quick_approve: mine,
+    step_requires_signature: mine ? (cur.requires_signature === 0 ? 0 : 1) : 0,
     open_questions: qCount.get(rq.id) || 0,
     step_title: !have.has(rq.id) ? 'پاسخ به پرسش'
       : rq.status === 'in_progress' ? currentStepOf(rq)?.title
       : rq.status === 'awaiting_requester' ? 'تایید نهایی شما' : 'اصلاح و ارسال مجدد',
     attachments_count: attachmentCount(rq),
-  }));
+  }; });
   res.json({ requests: result });
 });
 

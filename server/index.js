@@ -25,7 +25,7 @@ import backupRoutes from './routes/backups.js';
 import crmRoutes from './routes/crm.js';
 import leaveRoutes from './routes/leaves.js';
 import { setupSocket } from './socket.js';
-import { startReminderEngine } from './reminders.js';
+import { startReminderEngine, rescheduleExact } from './reminders.js';
 import { startBackupEngine } from './backup.js';
 import { startEmbeddedLivekit } from './livekit-process.js';
 
@@ -40,6 +40,16 @@ app.use(express.json({ limit: '2mb' }));
 app.use('/avatars', express.static(AVATARS_DIR, { maxAge: '1h' }));
 app.use('/branding', express.static(BRANDING_DIR, { maxAge: '1h' }));
 app.use('/usersounds', express.static(SOUNDS_DIR, { maxAge: '1h' }));
+
+// هر تغییری در چیزهای زمان‌دار (یادداشت، تسک، اطلاعیه، یادآوری روزانهٔ فرآیند)
+// زمان‌بندِ دقیق را دوباره تنظیم می‌کند — اعلان سرِ همان ثانیه می‌رود، بی‌آنکه نظرسنجی شود
+const SCHEDULED = /^\/api\/(notes|tasks|announcements|workflows\/templates)(\/|$)/;
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && SCHEDULED.test(req.path)) {
+    res.on('finish', () => { if (res.statusCode < 400) rescheduleExact(); });
+  }
+  next();
+});
 
 app.use('/api/auth', authRoutes);
 app.use('/api', authMiddleware, adminRoutes);

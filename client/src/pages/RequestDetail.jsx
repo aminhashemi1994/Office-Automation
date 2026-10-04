@@ -7,7 +7,7 @@ import {
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtDateTime, parseDate, formatFieldValue, fa } from '../utils.js';
-import { Modal, Field, UserPicker, Avatar } from '../components/common.jsx';
+import { Modal, Field, UserPicker, Avatar, MySignature } from '../components/common.jsx';
 import WorkflowTree from '../components/WorkflowTree.jsx';
 import { STATUS } from './Cartable.jsx';
 import RequestFormFields, { validateRequestForm } from '../components/RequestForm.jsx';
@@ -720,7 +720,11 @@ export default function RequestDetail() {
               {confirm === 'approve' ? 'تایید نهایی' : confirm === 'skip' ? 'عبور از این مرحله' : 'رد درخواست'}
             </button>
           </>}>
-          <Field label="توضیحات (اختیاری)">
+          {confirm === 'approve' && !req.can_final
+            && req.steps.find(st => st.step_order === req.current_step)?.requires_signature !== 0 && (
+            <Field label="امضا"><MySignature /></Field>
+          )}
+          <Field label={confirm === 'reject' ? 'توضیحات (اختیاری)' : 'پی‌نوشت (اختیاری)'}>
             <textarea className="input" value={comment} onChange={e => setComment(e.target.value)} autoFocus
               placeholder={confirm === 'reject' ? 'دلیل رد درخواست…' : 'توضیحات تکمیلی…'} />
           </Field>

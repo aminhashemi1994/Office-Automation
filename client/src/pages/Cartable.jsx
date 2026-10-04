@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Clock, Search, Paperclip, X } from 'lucide-react';
+import { Plus, Clock, Search, Paperclip, X, Check } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtRelative, fmtDateTime, parseDate, fa } from '../utils.js';
-import { Modal, Field, Avatar } from '../components/common.jsx';
+import { Modal, Field, Avatar, MySignature } from '../components/common.jsx';
 import { AttachmentList, AttachmentPicker, toFileIds as toIds } from '../components/Attachments.jsx';
 import RequestFormFields, { validateRequestForm } from '../components/RequestForm.jsx';
 
@@ -31,6 +31,8 @@ export default function Cartable() {
   const [templates, setTemplates] = useState([]);
   const [newReq, setNewReq] = useState(false);
   const [search, setSearch] = useState('');
+  const [quick, setQuick] = useState(null); // {row, comment} — تایید و امضا از همین کارتابل
+  const [busy, setBusy] = useState(false);
 
   const myDept = departments.find(d => d.id === user.department_id);
   // مدیرِ حداقل یک واحد (مدل چندمدیره) یا مدیر سامانه/واحد مدیریت → دسترسی به «همه درخواست‌ها»
@@ -53,6 +55,17 @@ export default function Cartable() {
     }
   };
   useEffect(() => { load(); return on('notification', load); }, []);
+
+  const quickApprove = async () => {
+    setBusy(true);
+    try {
+      const r = await api(`/workflows/requests/${quick.row.id}/action`, { method: 'POST',
+        body: { action: 'approve', comment: quick.comment } });
+      setQuick(null); await load();
+      toast(r.status === 'approved' ? 'تایید شد و درخواست بسته شد' : 'تایید شد و به مرحلهٔ بعد رفت');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
 
   const rowsAll = tab === 'inbox' ? inbox : tab === 'mine' ? mine : all;
   const rows = rowsAll.filter(r => !search
@@ -94,6 +107,7 @@ export default function Cartable() {
                 <th>وضعیت / مرحله</th>
                 <th>مهلت مرحله</th>
                 <th>ثبت</th>
+                {tab === 'inbox' && <th></th>}
               </tr>
             </thead>
             <tbody>
@@ -138,6 +152,15 @@ export default function Cartable() {
                       ) : '—'}
                     </td>
                     <td style={{ color: 'var(--text-3)', fontSize: 12.5 }}>{fmtRelative(r.created_at)}</td>
+                    {tab === 'inbox' && (
+                      <td>
+                        {r.can_quick_approve && (
+                          <button className="btn btn-primary btn-sm" onClick={() => setQuick({ row: r, comment: '' })}>
+                            <Check size={14} /> {r.step_requires_signature ? 'تایید و امضا' : 'تایید'}
+                          </button>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -145,6 +168,26 @@ export default function Cartable() {
           </table>
         )}
       </div>
+
+      {quick && (
+        <Modal title={`تایید: ${quick.row.title}`} onClose={() => setQuick(null)}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setQuick(null)}>انصراف</button>
+            <Link className="btn btn-ghost" to={`/cartable/${quick.row.id}`}>دیدن جزئیات</Link>
+            <button className="btn btn-primary" disabled={busy} onClick={quickApprove}>
+              <Check size={16} /> {quick.row.step_requires_signature ? 'تایید و امضا' : 'تایید'}
+            </button>
+          </>}>
+          <p style={{ fontSize: 12.8, color: 'var(--text-2)', marginTop: 0 }}>
+            {quick.row.template_name} — مرحلهٔ «{quick.row.step_title}» — درخواست‌دهنده: {quick.row.requester_name}
+          </p>
+          {quick.row.step_requires_signature ? <Field label="امضا"><MySignature /></Field> : null}
+          <Field label="پی‌نوشت (اختیاری)">
+            <textarea className="input" value={quick.comment} autoFocus
+              onChange={e => setQuick(q => ({ ...q, comment: e.target.value }))} />
+          </Field>
+        </Modal>
+      )}
 
       {newReq && <NewRequestModal templates={templates} onClose={() => setNewReq(false)} onDone={() => { setNewReq(false); setTab('mine'); load(); toast('درخواست شما ثبت شد'); }} />}
     </div>

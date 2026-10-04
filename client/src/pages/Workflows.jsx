@@ -266,6 +266,13 @@ function TemplateModal({ tpl, onClose, onDone }) {
   })) || [
     { title: 'تایید سرگروه واحد', approver_type: 'requester_manager', deadline_hours: 24, alt_approvers: [], requires_signature: 1, allow_attachments: 1 },
   ]);
+  // [یادآوری روزانه] برای فرم‌هایی مثل «برگهٔ حوادث روزانه» که هر روز باید ثبت و تایید شوند
+  const [daily, setDaily] = useState(() => {
+    let d = {}; try { d = JSON.parse(tpl?.daily_reminder || '{}') || {}; } catch {}
+    return { enabled: !!d.enabled, time: d.time || '08:00', days: d.days || [6, 0, 1, 2, 3],
+      dept_ids: d.dept_ids || [], user_ids: d.user_ids || [], approvers: d.approvers === 0 ? 0 : 1 };
+  });
+  const setD = (k, v) => setDaily(x => ({ ...x, [k]: v }));
   const [notifyFinal, setNotifyFinal] = useState(tpl ? tpl.notify_requester_on_final !== 0 : true);
   const [requesterSig, setRequesterSig] = useState(tpl ? tpl.requester_signature !== 0 : true);
   // [تایید نهایی درخواست‌دهنده] پس از آخرین مرحله، درخواست برای تصمیم نهایی به خودِ او برمی‌گردد
@@ -338,6 +345,7 @@ function TemplateModal({ tpl, onClose, onDone }) {
       const body = {
         name, description, title_placeholder: titlePlaceholder, form_schema: fields, steps,
         notify_requester_on_final: notifyFinal, requester_signature: requesterSig,
+        daily_reminder: daily,
         requester_final_approval: requesterFinal,
         past_days_limit: Number(pastDays) || 0,
         leave_enabled: leaveOn,
@@ -795,6 +803,58 @@ function TemplateModal({ tpl, onClose, onDone }) {
           )}
         </div>
       </Field>
+
+      {/* [یادآوری روزانه] هر روز در ساعت مشخص به واحدهای مربوطه اعلان برود */}
+      <div className="card-pad panel-soft" style={{ marginTop: 6, marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <b style={{ flex: 1 }}>یادآوری روزانه</b>
+          <Segmented size="sm" value={daily.enabled ? 1 : 0} onChange={v => setD('enabled', !!v)}
+            options={[{ value: 1, label: 'روشن', tone: 'primary' }, { value: 0, label: 'خاموش' }]} />
+        </div>
+        <div style={{ fontSize: 11.8, color: 'var(--text-3)', marginTop: 4 }}>
+          برای فرم‌هایی که یک بار تعریف می‌شوند ولی هر روز باید ثبت و تایید شوند (مثل برگهٔ حوادث روزانه).
+        </div>
+        {daily.enabled && (
+          <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: 12.5 }}>ساعت</span>
+              <input className="input" type="time" style={{ width: 120 }} value={daily.time}
+                onChange={e => setD('time', e.target.value)} />
+              <span style={{ fontSize: 12.5, marginInlineStart: 8 }}>روزها</span>
+              {[[6, 'شنبه'], [0, 'یکشنبه'], [1, 'دوشنبه'], [2, 'سه‌شنبه'], [3, 'چهارشنبه'], [4, 'پنجشنبه'], [5, 'جمعه']].map(([d, l]) => {
+                const on = daily.days.includes(d);
+                return (
+                  <button key={d} type="button" className={`btn btn-sm ${on ? 'btn-primary' : 'btn-ghost'}`}
+                    onClick={() => setD('days', on ? daily.days.filter(x => x !== d) : [...daily.days, d])}>{l}</button>
+                );
+              })}
+            </div>
+            <Field label="به اعضای این واحدها">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {departments.map(d => {
+                  const on = daily.dept_ids.includes(d.id);
+                  return (
+                    <button key={d.id} type="button" className={`btn btn-sm ${on ? 'btn-primary' : 'btn-ghost'}`}
+                      onClick={() => setD('dept_ids', on ? daily.dept_ids.filter(x => x !== d.id) : [...daily.dept_ids, d.id])}>
+                      {d.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+            <Field label="و این افراد">
+              <UserPicker multi value={daily.user_ids} onChange={v => setD('user_ids', v)} />
+            </Field>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.8, cursor: 'pointer' }}>
+              <input type="checkbox" checked={daily.approvers !== 0} onChange={e => setD('approvers', e.target.checked ? 1 : 0)} />
+              به مسئولانِ مرحله‌ای که هنوز تایید نکرده‌اند هم یادآوری شود
+            </label>
+            {!daily.dept_ids.length && !daily.user_ids.length && daily.approvers === 0 && (
+              <span style={{ fontSize: 11.5, color: 'var(--amber)' }}>هیچ گیرنده‌ای انتخاب نشده است.</span>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* [مورد ۷] ساخت تسک پس از تایید نهایی */}
       <div className="card-pad panel-soft" style={{ marginTop: 6 }}>

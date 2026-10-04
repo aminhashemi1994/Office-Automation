@@ -1213,6 +1213,11 @@ CREATE TABLE IF NOT EXISTS workflow_request_views (
 );
 `);
 
+// [یادآوری روزانه] فرآیندی مثل «برگهٔ حوادث روزانه» که هر روز باید ثبت و تایید شود:
+// {enabled, time:'08:00', days:[0..6] (روزِ هفته، ۰=یکشنبه), dept_ids:[], user_ids:[], approvers:1}
+try { db.exec("ALTER TABLE workflow_templates ADD COLUMN daily_reminder TEXT DEFAULT ''"); } catch {}
+try { db.exec("ALTER TABLE workflow_templates ADD COLUMN reminder_last_sent TEXT DEFAULT ''"); } catch {}
+
 // [پرسش و پاسخ] پرسش از فردی مشخص (target_user_id) و پاسخِ وصل‌شده به آن (parent_id)
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN parent_id INTEGER'); } catch {}
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN target_user_id INTEGER'); } catch {}

@@ -180,7 +180,16 @@ r.put('/:id', (req, res) => {
     .run(c.title, c.body, c.kind, c.audience, c.dept_ids, c.user_ids, c.attachments,
       c.pinned, c.require_ack, c.publish_at, c.expires_at,
       req.body?.is_active !== undefined ? (req.body.is_active ? 1 : 0) : a.is_active, a.id);
-  res.json({ ok: true });
+  // اگر با این ویرایش اطلاعیه تازه «منتشر» شد (فعال شد یا زمان‌بندی‌اش به حالا رسید)، اعلانش برود
+  const live = (x) => x.is_active && (!x.publish_at || new Date(x.publish_at).getTime() <= Date.now());
+  const after = db.prepare('SELECT * FROM announcements WHERE id = ?').get(a.id);
+  let notified = false;
+  if (!live(a) && live(after)) {
+    notifyAudience(after, req.user);
+    if (after.publish_at) db.prepare("UPDATE announcements SET publish_at = '' WHERE id = ?").run(a.id);
+    notified = true;
+  }
+  res.json({ ok: true, notified });
 });
 
 r.delete('/:id', (req, res) => {
