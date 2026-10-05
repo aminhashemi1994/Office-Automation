@@ -435,30 +435,19 @@ export default function RequestDetail() {
           </div>
 
           {/* [ردیابی مرحله] کار الان روی میزِ کیست و آیا دیده/دریافت کرده است */}
-          {req.step_watch && (
-            <div className="card card-pad" style={{ marginBottom: 18 }}>
+          {/* وضعیتِ دیده/دریافتِ همه در خودِ نمودار نشان داده می‌شود؛ این کارت فقط وقتی است که کاری با شماست */}
+          {req.step_watch && req.can_receive && (
+            <div className="card card-pad" style={{ marginBottom: 18, borderInlineStart: '4px solid var(--primary)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-                <Clock size={15} /><b style={{ fontSize: 13.5 }}>وضعیت مرحلهٔ فعلی: {req.step_watch.step_title}</b>
+                <Clock size={15} /><b style={{ fontSize: 13.5 }}>این مرحله با شماست: {req.step_watch.step_title}</b>
                 {req.step_watch.since && (
                   <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>از {fmtDateTime(req.step_watch.since)}</span>
                 )}
               </div>
-              <div style={{ display: 'grid', gap: 8 }}>
-                {req.step_watch.people.map(p => (
-                  <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
-                    <Avatar name={p.full_name} color={p.avatar_color} size={24} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {p.full_name}
-                      {p.received_note && <div style={{ fontSize: 11.8, color: 'var(--text-2)' }}>پی‌نوشت: {p.received_note}</div>}
-                    </div>
-                    {p.received_at
-                      ? <span className="badge badge-green"><Check size={11} /> دریافت کرد — {fmtDateTime(p.received_at)}</span>
-                      : p.seen_at
-                      ? <span className="badge badge-sky"><Eye size={11} /> دیده — {fmtDateTime(p.seen_at)}</span>
-                      : <span className="badge badge-gray">هنوز ندیده</span>}
-                  </div>
-                ))}
-              </div>
+              <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 2px', lineHeight: 1.85 }}>
+                با «دریافت شد» به درخواست‌دهنده و مسئول پیگیری خبر می‌دهید که درخواست را دیده‌اید و در دست بررسی است.
+                مرحله عوض نمی‌شود؛ تایید را جداگانه می‌زنید.
+              </p>
               {req.can_receive && (
                 <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-soft)', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <input className="input" style={{ minWidth: 180, flex: 1 }} value={ackNote} maxLength={500}
@@ -722,7 +711,7 @@ export default function RequestDetail() {
           </>}>
           {confirm === 'approve' && !req.can_final
             && req.steps.find(st => st.step_order === req.current_step)?.requires_signature !== 0 && (
-            <Field label="امضا"><MySignature /></Field>
+            <Field label="امضای شما"><MySignature /></Field>
           )}
           <Field label={confirm === 'reject' ? 'توضیحات (اختیاری)' : 'پی‌نوشت (اختیاری)'}>
             <textarea className="input" value={comment} onChange={e => setComment(e.target.value)} autoFocus

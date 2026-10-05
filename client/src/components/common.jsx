@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Search, ChevronDown, Check } from 'lucide-react';
+import { X, Search, ChevronDown, Check, AlertTriangle } from 'lucide-react';
 import { useStore } from '../store.jsx';
 import { initials } from '../utils.js';
 import { getToken } from '../api.js';
@@ -294,18 +294,19 @@ export function MySignature() {
   const { user } = useStore();
   if (!user?.has_signature) {
     return (
-      <div style={{ fontSize: 12.3, color: 'var(--amber)', lineHeight: 1.85 }}>
-        ⚠️ شما هنوز امضای تصویری ثبت نکرده‌اید؛ تایید ثبت می‌شود ولی جای امضا در سند چاپی خالی می‌ماند.
-        از «پروفایل» امضای خود را بارگذاری کنید.
+      <div className="callout warn">
+        <AlertTriangle size={16} />
+        <div>
+          <b>امضای تصویری ثبت نکرده‌اید.</b> تایید شما ثبت می‌شود، ولی جای امضا در سند چاپی خالی می‌ماند.
+          امضای خود را از «پروفایل من» بارگذاری کنید.
+        </div>
       </div>
     );
   }
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-      <img src={`/api/users/${user.id}/signature?token=${encodeURIComponent(getToken())}`} alt="امضای شما"
-        style={{ height: 64, maxWidth: 200, objectFit: 'contain', background: '#fff', borderRadius: 8,
-          border: '1px solid var(--border)', padding: 4 }} />
-      <span style={{ fontSize: 12.3, color: 'var(--text-2)' }}>این امضا پای تایید شما در سند ثبت می‌شود.</span>
+    <div className="sig-box">
+      <img src={`/api/users/${user.id}/signature?token=${encodeURIComponent(getToken())}`} alt="امضای شما" />
+      <span className="sig-note">این امضا پای تایید شما در سند ثبت می‌شود.</span>
     </div>
   );
 }

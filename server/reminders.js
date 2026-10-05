@@ -3,6 +3,7 @@ import { notifyUser, notifyUsers } from './notify.js';
 import { resolveApprovers, currentStepOfRequest } from './routes/workflows.js';
 import { flushQueue } from './sms.js';
 import { notifyAudience } from './routes/announcements.js';
+import { deptDirectors, deptHeads } from './acl.js';
 
 const HOUR = 3600 * 1000;
 
@@ -143,9 +144,22 @@ export function checkDailyWorkflowReminders() {
     db.prepare('UPDATE workflow_templates SET reminder_last_sent = ? WHERE id = ?').run(now.date, t.id);
     try {
       const ids = new Set((cfg.user_ids || []).map(Number));
-      if (cfg.dept_ids?.length) {
+      // تنظیماتِ قدیمی (بدون این پرچم‌ها) یعنی «همهٔ اعضای واحد»
+      const legacy = cfg.to_members === undefined && cfg.to_directors === undefined && cfg.to_heads === undefined;
+      const toMembers = legacy || !!cfg.to_members;
+      if (toMembers && cfg.dept_ids?.length) {
         const ph = cfg.dept_ids.map(() => '?').join(',');
         for (const u of db.prepare(`SELECT id FROM users WHERE is_active = 1 AND department_id IN (${ph})`).all(...cfg.dept_ids)) ids.add(u.id);
+      }
+      // مدیرانِ واحد و سرپرست‌ها (جانشینِ مدیر) — واحدهای انتخاب‌شده، یا همهٔ واحدها اگر واحدی انتخاب نشده
+      if (cfg.to_directors || cfg.to_heads) {
+        const units = cfg.dept_ids?.length ? cfg.dept_ids
+          : db.prepare('SELECT id FROM departments').all().map(d => d.id);
+        const active = db.prepare('SELECT 1 FROM users WHERE id = ? AND is_active = 1');
+        for (const d of units) {
+          const people = [...(cfg.to_directors ? deptDirectors(d) : []), ...(cfg.to_heads ? deptHeads(d) : [])];
+          for (const id of people) if (active.get(id)) ids.add(Number(id));
+        }
       }
       if (ids.size) {
         notifyUsers([...ids], {

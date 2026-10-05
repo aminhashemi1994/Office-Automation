@@ -204,8 +204,8 @@ export function canViewRequest(user, rq) {
   if (!rq) return false;
   if (canAccessEverywhere(user)) return true;                 // [مورد ۶] ادمین/مدیریت/مجوز → همه
   if (rq.requester_id === user.id) return true;               // درخواست‌های خودم
-  const tpl = db.prepare('SELECT created_by FROM workflow_templates WHERE id = ?').get(rq.template_id);
-  if (tpl?.created_by === user.id) return true;
+  const tpl = db.prepare('SELECT created_by, owner_user_id FROM workflow_templates WHERE id = ?').get(rq.template_id);
+  if (tpl?.created_by === user.id || tpl?.owner_user_id === user.id) return true;
   // [پرسش و پاسخ] کسی که از او پرسش شده هم باید بتواند درخواست را ببیند و پاسخ دهد
   if (db.prepare('SELECT 1 FROM workflow_actions WHERE request_id = ? AND (actor_id = ? OR target_user_id = ?)').get(rq.id, user.id, user.id)) return true;
   // [مورد ۶] مدیرِ واحدِ درخواست‌دهنده
@@ -696,6 +696,9 @@ function createTaskFromRequest(rq, tpl, actorId, opts = {}) {
 // بستنِ درخواست به‌عنوان «تایید نهایی» + اعلان به درخواست‌دهنده + ساخت تسکِ نهایی (در صورت فعال‌بودن)
 function closeAsApproved(rq, tpl, actorId) {
   db.prepare("UPDATE workflow_requests SET status = 'approved', closed_at = datetime('now') WHERE id = ?").run(rq.id);
+  notifyOwner(rq, tpl.id, actorId, { final: true,
+    title: `✅ فرآیند کامل شد: ${tpl.name}`,
+    body: `«${rq.title}» همهٔ مراحل تایید${requestSteps(rq).some(s => s.requires_signature !== 0) ? ' و امضا' : ''} را طی کرد و بسته شد` });
   // [مرخصی] اگر این فرآیند «فرآیند مرخصی» است، مقدارِ مرخصی از ماندهٔ درخواست‌دهنده کم می‌شود
   applyLeaveDeduction(rq, tpl);
   // اطلاع به درخواست‌دهنده — طبق تنظیم فرآیند (پیش‌فرض: بله). اگر خودش تایید نهایی کرده، اعلان لازم نیست.
@@ -860,6 +863,34 @@ function templateExtras(body, prev = {}) {
   };
 }
 
+// [مسئول پیگیری] ذخیرهٔ شخص و نوع اعلان
+function saveOwner(templateId, body, fallbackUserId) {
+  const has = body && (body.owner_user_id !== undefined || body.owner_notify !== undefined);
+  if (!has && fallbackUserId === undefined) return;
+  const cur = db.prepare('SELECT owner_user_id, owner_notify FROM workflow_templates WHERE id = ?').get(templateId) || {};
+  let owner = body?.owner_user_id !== undefined ? (Number(body.owner_user_id) || null) : (cur.owner_user_id ?? fallbackUserId ?? null);
+  if (owner && !db.prepare('SELECT 1 FROM users WHERE id = ?').get(owner)) owner = null;
+  const mode = ['each', 'final', 'off'].includes(body?.owner_notify) ? body.owner_notify : (cur.owner_notify || 'each');
+  db.prepare('UPDATE workflow_templates SET owner_user_id = ?, owner_notify = ? WHERE id = ?').run(owner, mode, templateId);
+}
+
+// [مسئول پیگیری] خبر دادن به مسئولِ پیگیریِ فرآیند. final=true یعنی نتیجهٔ نهایی (تایید/رد).
+function notifyOwner(rq, tplId, actorId, { final = false, title, body }) {
+  const t = db.prepare('SELECT owner_user_id, owner_notify FROM workflow_templates WHERE id = ?').get(tplId);
+  if (!t?.owner_user_id || t.owner_notify === 'off') return;
+  if (!final && t.owner_notify !== 'each') return;
+  if (t.owner_user_id === actorId) return;
+  notifyUsers([t.owner_user_id], { type: 'workflow', title, body, link: `/cartable/${rq.id}` });
+}
+
+// [پیشرفت] چند مرحله از چند مرحله طی شده است
+function progressOf(rq) {
+  const total = requestSteps(rq).length;
+  const done = rq.status === 'approved' || rq.status === 'awaiting_requester' ? total
+    : Math.max(0, Math.min(total, (rq.current_step || 1) - 1));
+  return { done, total };
+}
+
 // [یادآوری روزانه] پاک‌سازی و ذخیرهٔ تنظیمات
 function saveDailyReminder(templateId, v) {
   if (v === undefined) return;
@@ -870,6 +901,10 @@ function saveDailyReminder(templateId, v) {
     days: (Array.isArray(v.days) ? v.days : []).map(Number).filter(d => d >= 0 && d <= 6),
     dept_ids: ids(v.dept_ids), user_ids: ids(v.user_ids),
     approvers: v.approvers === 0 || v.approvers === false ? 0 : 1,
+    // گیرندگان در واحدهای انتخاب‌شده (اگر واحدی انتخاب نشده: همهٔ واحدها برای مدیر/سرپرست)
+    to_members: v.to_members ? 1 : 0,
+    to_directors: v.to_directors ? 1 : 0,
+    to_heads: v.to_heads ? 1 : 0,
   } : null;
   db.prepare('UPDATE workflow_templates SET daily_reminder = ? WHERE id = ?')
     .run(clean ? JSON.stringify(clean) : '', templateId);
@@ -900,6 +935,7 @@ r.post('/templates', (req, res) => {
       ex.allow_on_behalf, ex.cc_mode, ex.cc_require_ack);
   insertSteps(result.lastInsertRowid, steps);
   saveDailyReminder(result.lastInsertRowid, req.body?.daily_reminder);
+  saveOwner(result.lastInsertRowid, req.body || {}, req.user.id); // پیش‌فرض: خودِ سازنده
   res.json({ id: result.lastInsertRowid });
 });
 
@@ -930,6 +966,7 @@ r.put('/templates/:id', (req, res) => {
       ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map,
       ex.past_days_limit, ex.owner_dept_id, ex.allow_on_behalf, ex.cc_mode, ex.cc_require_ack, t.id);
   saveDailyReminder(t.id, req.body?.daily_reminder);
+  saveOwner(t.id, req.body || {});
   if (steps) {
     const hasOpen = db.prepare("SELECT 1 FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").get(t.id);
     if (hasOpen) return res.status(400).json({ error: 'تا زمانی که درخواست در جریان دارد، مراحل قابل تغییر نیست' });
@@ -1112,6 +1149,15 @@ r.post('/requests/:id/receive', (req, res) => {
       link: `/cartable/${rq.id}`,
     });
   }
+  if (rq.requester_id !== req.user.id) {
+    const owner = db.prepare('SELECT owner_user_id FROM workflow_templates WHERE id = ?').get(rq.template_id)?.owner_user_id;
+    if (owner !== rq.requester_id) {
+      notifyOwner(rq, rq.template_id, req.user.id, {
+        title: 'درخواست دریافت شد',
+        body: `${req.user.full_name} «${rq.title}» را در مرحلهٔ «${step.title}» دریافت کرد${note ? ' — ' + note.slice(0, 120) : ''}`,
+      });
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -1260,7 +1306,20 @@ r.get('/requests/mine', (req, res) => {
     SELECT r.*, t.name AS template_name FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
     WHERE r.requester_id = ? ORDER BY r.id DESC`).all(req.user.id)
-    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq), step_watch: watchSummary(rq) }));
+    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq), step_watch: watchSummary(rq), progress: progressOf(rq) }));
+  res.json({ requests });
+});
+
+// [مسئول پیگیری] درخواست‌های فرآیندهایی که من مسئول پیگیری‌شان هستم
+r.get('/requests/following', (req, res) => {
+  const requests = db.prepare(`
+    SELECT r.*, t.name AS template_name, us.full_name AS requester_name
+    FROM workflow_requests r
+    JOIN workflow_templates t ON t.id = r.template_id
+    JOIN users us ON us.id = r.requester_id
+    WHERE t.owner_user_id = ? ORDER BY r.id DESC LIMIT 300`).all(req.user.id)
+    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq),
+      step_watch: watchSummary(rq), progress: progressOf(rq) }));
   res.json({ requests });
 });
 
@@ -1290,14 +1349,15 @@ r.get('/requests/all', (req, res) => {
     }
     for (const row of db.prepare('SELECT target_id FROM request_view_grants WHERE viewer_id = ?').all(u.id)) allowed.add(row.target_id);
     const ph = [...allowed].map(() => '?').join(',');
-    rows = db.prepare(`${base} WHERE r.requester_id IN (${ph}) OR t.created_by = ?
-      ORDER BY r.id DESC LIMIT 500`).all(...allowed, u.id);
+    rows = db.prepare(`${base} WHERE r.requester_id IN (${ph}) OR t.created_by = ? OR t.owner_user_id = ?
+      ORDER BY r.id DESC LIMIT 500`).all(...allowed, u.id, u.id);
   }
   const requests = rows.map(rq => ({
     ...rq,
     step_title: stepLabelOf(rq),
     attachments_count: attachmentCount(rq),
     step_watch: watchSummary(rq),
+    progress: progressOf(rq),
   }));
   res.json({ requests, scoped: !canAccessEverywhere(u) });
 });
@@ -1514,6 +1574,9 @@ r.post('/requests/:id/action', (req, res) => {
 
   if (action === 'reject') {
     db.prepare("UPDATE workflow_requests SET status = 'rejected', closed_at = datetime('now') WHERE id = ?").run(rq.id);
+    notifyOwner(rq, tpl.id, req.user.id, { final: true,
+      title: `❌ درخواست رد شد: ${tpl.name}`,
+      body: `«${rq.title}» در مرحلهٔ «${stepLabel}» توسط ${req.user.full_name} رد شد${comment ? ' — ' + comment : ''}` });
     if (rq.requester_id !== req.user.id) {
       notifyUsers([rq.requester_id], {
         type: 'workflow',
@@ -1552,6 +1615,10 @@ r.post('/requests/:id/action', (req, res) => {
         body: `«${rq.title}» همهٔ مراحل تایید را طی کرد و برای تایید نهایی در کارتابل شماست`,
         link: `/cartable/${rq.id}`,
       });
+      notifyOwner(rq, tpl.id, req.user.id, {
+        title: `پیشرفت فرآیند: ${tpl.name}`,
+        body: `«${rq.title}» همهٔ مراحل تایید را طی کرد و منتظر تایید نهاییِ درخواست‌دهنده است`,
+      });
       return res.json({ ok: true, status: 'awaiting_requester' });
     }
     const createdTaskId = closeAsApproved(rq, tpl, req.user.id);
@@ -1561,6 +1628,10 @@ r.post('/requests/:id/action', (req, res) => {
   db.prepare('UPDATE workflow_requests SET current_step = ?, step_due_at = ?, last_reminded_at = NULL WHERE id = ?')
     .run(next.step_order, stepDueAt(next), rq.id);
   const nextApprovers = resolveApprovers(next, rq.requester_id);
+  notifyOwner(rq, tpl.id, req.user.id, {
+    title: `پیشرفت فرآیند: ${tpl.name} (${(rq.current_step).toLocaleString('fa-IR')} از ${steps.length.toLocaleString('fa-IR')})`,
+    body: `«${rq.title}» در مرحلهٔ «${step.title}» توسط ${req.user.full_name} ${action === 'skip' ? 'عبور داده شد' : step.requires_signature !== 0 ? 'تایید و امضا شد' : 'تایید شد'} و به «${next.title}» رسید`,
+  });
   notifyApprovers(next, nextApprovers, {
     type: 'workflow',
     title: `کارتابل: ${tpl.name}`,

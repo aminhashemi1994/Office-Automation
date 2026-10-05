@@ -215,7 +215,7 @@ function FieldPicker({ fields, value, types, onChange }) {
 }
 
 function TemplateModal({ tpl, onClose, onDone }) {
-  const { departments, users, settings, toast } = useStore();
+  const { departments, users, settings, toast, user } = useStore();
 
   // نمایش دقیق فردی که در هر مرحله تایید می‌کند
   const approverPreview = (s) => {
@@ -269,9 +269,16 @@ function TemplateModal({ tpl, onClose, onDone }) {
   // [یادآوری روزانه] برای فرم‌هایی مثل «برگهٔ حوادث روزانه» که هر روز باید ثبت و تایید شوند
   const [daily, setDaily] = useState(() => {
     let d = {}; try { d = JSON.parse(tpl?.daily_reminder || '{}') || {}; } catch {}
+    // تنظیمِ قدیمیِ ذخیره‌شده (بدون پرچمِ گیرنده) یعنی «همهٔ اعضای واحد»
+    const legacy = d.enabled !== undefined && d.to_members === undefined && d.to_directors === undefined && d.to_heads === undefined;
     return { enabled: !!d.enabled, time: d.time || '08:00', days: d.days || [6, 0, 1, 2, 3],
-      dept_ids: d.dept_ids || [], user_ids: d.user_ids || [], approvers: d.approvers === 0 ? 0 : 1 };
+      dept_ids: d.dept_ids || [], user_ids: d.user_ids || [], approvers: d.approvers === 0 ? 0 : 1,
+      to_directors: legacy ? 0 : (d.to_directors ?? 1), to_heads: legacy ? 0 : (d.to_heads ?? 1),
+      to_members: legacy ? 1 : (d.to_members ?? 0) };
   });
+  // [مسئول پیگیری] چه کسی از پیشرفتِ درخواست‌های این فرآیند خبردار شود (پیش‌فرض: سازنده)
+  const [ownerId, setOwnerId] = useState(tpl ? (tpl.owner_user_id ?? null) : user?.id ?? null);
+  const [ownerNotify, setOwnerNotify] = useState(tpl?.owner_notify || 'each');
   const setD = (k, v) => setDaily(x => ({ ...x, [k]: v }));
   const [notifyFinal, setNotifyFinal] = useState(tpl ? tpl.notify_requester_on_final !== 0 : true);
   const [requesterSig, setRequesterSig] = useState(tpl ? tpl.requester_signature !== 0 : true);
@@ -346,6 +353,7 @@ function TemplateModal({ tpl, onClose, onDone }) {
         name, description, title_placeholder: titlePlaceholder, form_schema: fields, steps,
         notify_requester_on_final: notifyFinal, requester_signature: requesterSig,
         daily_reminder: daily,
+        owner_user_id: ownerId || null, owner_notify: ownerNotify,
         requester_final_approval: requesterFinal,
         past_days_limit: Number(pastDays) || 0,
         leave_enabled: leaveOn,
@@ -700,7 +708,7 @@ function TemplateModal({ tpl, onClose, onDone }) {
                 درخواست‌دهنده بتواند این مرحله را حذف کند
               </label>
             </div>
-            {(s.dynamic_approver || s.dynamic_deadline || s.skippable_at_submit) && (
+            {!!(s.dynamic_approver || s.dynamic_deadline || s.skippable_at_submit) && (
               <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 6, lineHeight: 1.8 }}>
                 مقادیرِ بالا پیش‌فرض می‌شوند و کاربر هنگام ثبت می‌تواند عوضشان کند.
                 مسیرِ انتخاب‌شده برای همان درخواست ثبت می‌شود و تغییرِ بعدیِ فرآیند به آن دست نمی‌زند.
@@ -804,6 +812,21 @@ function TemplateModal({ tpl, onClose, onDone }) {
         </div>
       </Field>
 
+      {/* [مسئول پیگیری] شخصی که پیشرفتِ هر درخواست را می‌بیند و اعلان می‌گیرد */}
+      <div className="card-pad panel-soft" style={{ marginTop: 6, marginBottom: 10 }}>
+        <b>مسئول پیگیری فرآیند</b>
+        <div style={{ fontSize: 11.8, color: 'var(--text-3)', margin: '4px 0 10px', lineHeight: 1.8 }}>
+          این شخص درخواست‌های این فرآیند را در کارتابل (تب «پیگیری فرآیندها») به‌صورت درختی می‌بیند
+          و هر وقت مرحله‌ای تایید/امضا شد پیام می‌گیرد.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto', gap: 10, alignItems: 'center' }}>
+          <UserPicker value={ownerId} onChange={setOwnerId} placeholder="انتخاب شخص…" />
+          <Segmented size="sm" value={ownerNotify} onChange={setOwnerNotify}
+            options={[{ value: 'each', label: 'هر مرحله', tone: 'primary' }, { value: 'final', label: 'فقط نتیجهٔ نهایی' }, { value: 'off', label: 'بدون پیام' }]} />
+        </div>
+        {!ownerId && <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 6 }}>کسی انتخاب نشده؛ به هیچ‌کس پیام پیشرفت نمی‌رود.</div>}
+      </div>
+
       {/* [یادآوری روزانه] هر روز در ساعت مشخص به واحدهای مربوطه اعلان برود */}
       <div className="card-pad panel-soft" style={{ marginTop: 6, marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -820,7 +843,9 @@ function TemplateModal({ tpl, onClose, onDone }) {
               <span style={{ fontSize: 12.5 }}>ساعت</span>
               <input className="input" type="time" style={{ width: 120 }} value={daily.time}
                 onChange={e => setD('time', e.target.value)} />
-              <span style={{ fontSize: 12.5, marginInlineStart: 8 }}>روزها</span>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: 12.5, marginInlineEnd: 6 }}>روزها</span>
               {[[6, 'شنبه'], [0, 'یکشنبه'], [1, 'دوشنبه'], [2, 'سه‌شنبه'], [3, 'چهارشنبه'], [4, 'پنجشنبه'], [5, 'جمعه']].map(([d, l]) => {
                 const on = daily.days.includes(d);
                 return (
@@ -829,7 +854,19 @@ function TemplateModal({ tpl, onClose, onDone }) {
                 );
               })}
             </div>
-            <Field label="به اعضای این واحدها">
+            <Field label="چه کسانی یادآوری بگیرند؟">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+                {[['to_directors', 'مدیرانِ واحد'], ['to_heads', 'سرپرست / سرگروه (جانشینِ مدیر)'], ['to_members', 'همهٔ اعضای واحد']].map(([k, l]) => (
+                  <label key={k} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.8, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={!!daily[k]} onChange={e => setD(k, e.target.checked ? 1 : 0)} /> {l}
+                  </label>
+                ))}
+              </div>
+            </Field>
+            <Field label="در کدام واحدها؟"
+              hint={(daily.to_directors || daily.to_heads)
+                ? 'اگر واحدی انتخاب نکنید، به مدیر و سرپرستِ همهٔ واحدها یادآوری می‌شود.'
+                : 'اعضای واحدهای انتخاب‌شده یادآوری می‌گیرند.'}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {departments.map(d => {
                   const on = daily.dept_ids.includes(d.id);
@@ -842,14 +879,15 @@ function TemplateModal({ tpl, onClose, onDone }) {
                 })}
               </div>
             </Field>
-            <Field label="و این افراد">
+            <Field label="و این افراد (اختیاری)">
               <UserPicker multi value={daily.user_ids} onChange={v => setD('user_ids', v)} />
             </Field>
             <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.8, cursor: 'pointer' }}>
               <input type="checkbox" checked={daily.approvers !== 0} onChange={e => setD('approvers', e.target.checked ? 1 : 0)} />
               به مسئولانِ مرحله‌ای که هنوز تایید نکرده‌اند هم یادآوری شود
             </label>
-            {!daily.dept_ids.length && !daily.user_ids.length && daily.approvers === 0 && (
+            {!daily.to_directors && !daily.to_heads && !(daily.to_members && daily.dept_ids.length)
+              && !daily.user_ids.length && daily.approvers === 0 && (
               <span style={{ fontSize: 11.5, color: 'var(--amber)' }}>هیچ گیرنده‌ای انتخاب نشده است.</span>
             )}
           </div>

@@ -1218,6 +1218,11 @@ CREATE TABLE IF NOT EXISTS workflow_request_views (
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN daily_reminder TEXT DEFAULT ''"); } catch {}
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN reminder_last_sent TEXT DEFAULT ''"); } catch {}
 
+// [مسئول پیگیری] شخصی که پیشرفتِ درخواست‌های این فرآیند را پیگیری می‌کند و اعلان می‌گیرد
+// owner_notify: each (هر مرحله) | final (فقط نتیجهٔ نهایی) | off
+try { db.exec('ALTER TABLE workflow_templates ADD COLUMN owner_user_id INTEGER'); } catch {}
+try { db.exec("ALTER TABLE workflow_templates ADD COLUMN owner_notify TEXT DEFAULT 'each'"); } catch {}
+
 // [پرسش و پاسخ] پرسش از فردی مشخص (target_user_id) و پاسخِ وصل‌شده به آن (parent_id)
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN parent_id INTEGER'); } catch {}
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN target_user_id INTEGER'); } catch {}
@@ -1381,6 +1386,14 @@ if (userCount === 0) {
 
 // عمداً بعد از بلوک seed: روی دیتابیسِ تازه هم واحدها و کاربران باید موجود باشند
 seedDeptPositions();
+
+// عمداً بعد از بلوک seed تا فرآیندِ نمونه هم شامل شود
+// یک‌بار: فرآیندهای موجود، سازنده‌شان را مسئول پیگیری بگیرند (بعداً از فرم قابل تغییر است)
+if (db.prepare("SELECT value FROM app_settings WHERE key = 'owner_seeded'").get()?.value !== '1') {
+  db.exec('UPDATE workflow_templates SET owner_user_id = created_by WHERE owner_user_id IS NULL');
+  db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('owner_seeded', '1')").run();
+}
+
 
 // ثبت نسخهٔ ساختار — از این پس تا تغییر بعدیِ ساختار، پشتیبانِ پیش از مایگریشن تکرار نمی‌شود
 db.prepare(`INSERT INTO app_settings (key, value) VALUES ('schema_tag', ?)

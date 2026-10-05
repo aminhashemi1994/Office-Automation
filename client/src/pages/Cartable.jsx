@@ -1,12 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Clock, Search, Paperclip, X, Check } from 'lucide-react';
+import { Plus, Clock, Search, Paperclip, X, Check, GitBranch } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtRelative, fmtDateTime, parseDate, fa } from '../utils.js';
 import { Modal, Field, Avatar, MySignature } from '../components/common.jsx';
 import { AttachmentList, AttachmentPicker, toFileIds as toIds } from '../components/Attachments.jsx';
 import RequestFormFields, { validateRequestForm } from '../components/RequestForm.jsx';
+import WorkflowTree, { MiniProgress } from '../components/WorkflowTree.jsx';
 
 export const STATUS = {
   in_progress: ['در جریان', 'badge-primary'],
@@ -31,6 +32,9 @@ export default function Cartable() {
   const [templates, setTemplates] = useState([]);
   const [newReq, setNewReq] = useState(false);
   const [search, setSearch] = useState('');
+  const [following, setFollowing] = useState([]); // [مسئول پیگیری] درخواست‌های فرآیندهایی که پیگیرشان هستم
+  const [trees, setTrees] = useState({});         // {requestId: detail} — نمای درختیِ باز در فهرست
+  const treesRef = useRef(trees); treesRef.current = trees;
   const [quick, setQuick] = useState(null); // {row, comment} — تایید و امضا از همین کارتابل
   const [busy, setBusy] = useState(false);
 
@@ -41,12 +45,15 @@ export default function Cartable() {
     || !!myDept?.is_management;
 
   const load = async () => {
-    const [i, m, t] = await Promise.all([
+    const [i, m, t, f] = await Promise.all([
       api('/workflows/requests/inbox'),
       api('/workflows/requests/mine'),
       api('/workflows/templates'),
+      api('/workflows/requests/following').catch(() => ({ requests: [] })),
     ]);
-    setInbox(i.requests); setMine(m.requests);
+    setInbox(i.requests); setMine(m.requests); setFollowing(f.requests || []);
+    // درخت‌های باز، با دادهٔ تازه به‌روز شوند
+    Object.keys(treesRef.current).forEach(id => openTree(Number(id), true));
     setCartableCount(i.requests.length);
     setTemplates(t.templates.filter(x => x.is_active));
     if (canBuild) {
@@ -67,7 +74,16 @@ export default function Cartable() {
     setBusy(false);
   };
 
-  const rowsAll = tab === 'inbox' ? inbox : tab === 'mine' ? mine : all;
+  // [نمای درختی] باز/بسته کردنِ نمودارِ مسیر زیرِ همان ردیف
+  const openTree = async (id, refresh = false) => {
+    if (!refresh && trees[id]) { setTrees(t => { const n = { ...t }; delete n[id]; return n; }); return; }
+    try {
+      const r = await api(`/workflows/requests/${id}`);
+      setTrees(t => ({ ...t, [id]: r.request }));
+    } catch (e) { if (!refresh) toast(e.message, 'error'); }
+  };
+
+  const rowsAll = tab === 'inbox' ? inbox : tab === 'mine' ? mine : tab === 'following' ? following : all;
   const rows = rowsAll.filter(r => !search
     || r.title.includes(search) || r.template_name.includes(search)
     || (r.requester_name || '').includes(search));
@@ -80,6 +96,15 @@ export default function Cartable() {
             در انتظار اقدام من {inbox.length > 0 && <span className="badge-count">{inbox.length.toLocaleString('fa-IR')}</span>}
           </button>
           <button className={`tab ${tab === 'mine' ? 'active' : ''}`} onClick={() => setTab('mine')}>درخواست‌های من</button>
+          {following.length > 0 && (
+            <button className={`tab ${tab === 'following' ? 'active' : ''}`} onClick={() => setTab('following')}
+              title="درخواست‌های فرآیندهایی که شما مسئول پیگیری‌شان هستید">
+              پیگیری فرآیندها
+              {following.filter(r => r.status === 'in_progress').length > 0 && (
+                <span className="badge-count">{fa(following.filter(r => r.status === 'in_progress').length)}</span>
+              )}
+            </button>
+          )}
           {canBuild && (
             <button className={`tab ${tab === 'all' ? 'active' : ''}`} onClick={() => setTab('all')}>همه درخواست‌ها</button>
           )}
@@ -115,9 +140,14 @@ export default function Cartable() {
                 const [sl, sc] = STATUS[r.status] || STATUS.in_progress;
                 const overdue = r.status === 'in_progress' && r.step_due_at && parseDate(r.step_due_at) < new Date();
                 return (
-                  <tr key={r.id}>
+                  <React.Fragment key={r.id}>
+                  <tr>
                     <td>
                       <Link to={`/cartable/${r.id}`} style={{ fontWeight: 600, color: 'var(--primary)' }}>{r.title}</Link>
+                      <button className={`btn btn-sm ${trees[r.id] ? 'btn-primary' : 'btn-ghost'}`} style={{ marginRight: 6, padding: '2px 8px' }}
+                        title="نمایش درختیِ مسیر: الان کجاست و تایید چه کسی مانده" onClick={() => openTree(r.id)}>
+                        <GitBranch size={13} /> درختی
+                      </button>
                       {/* [پیوست‌ها] نشانِ «این درخواست فایل پیوست دارد» */}
                       {r.attachments_count > 0 && (
                         <span className="badge badge-sky" style={{ marginRight: 6 }}
@@ -130,6 +160,7 @@ export default function Cartable() {
                     {tab !== 'mine' && <td>{r.requester_name}</td>}
                     <td>
                       <span className={`badge ${sc}`}>{sl}</span>
+                      <MiniProgress progress={r.progress} status={r.status} />
                       {r.open_questions > 0 && (
                         <span className="badge badge-sky" style={{ marginRight: 6 }}>{fa(r.open_questions)} پرسش بی‌پاسخ</span>
                       )}
@@ -155,13 +186,23 @@ export default function Cartable() {
                     {tab === 'inbox' && (
                       <td>
                         {r.can_quick_approve && (
-                          <button className="btn btn-primary btn-sm" onClick={() => setQuick({ row: r, comment: '' })}>
+                          <button className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }} onClick={() => setQuick({ row: r, comment: '' })}>
                             <Check size={14} /> {r.step_requires_signature ? 'تایید و امضا' : 'تایید'}
                           </button>
                         )}
                       </td>
                     )}
                   </tr>
+                  {trees[r.id] && (
+                    <tr className="wf-row-panel">
+                      <td colSpan={10}>
+                        <div className="wf-panel-inner">
+                          <WorkflowTree req={trees[r.id]} variant="horizontal" />
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -178,10 +219,12 @@ export default function Cartable() {
               <Check size={16} /> {quick.row.step_requires_signature ? 'تایید و امضا' : 'تایید'}
             </button>
           </>}>
-          <p style={{ fontSize: 12.8, color: 'var(--text-2)', marginTop: 0 }}>
-            {quick.row.template_name} — مرحلهٔ «{quick.row.step_title}» — درخواست‌دهنده: {quick.row.requester_name}
-          </p>
-          {quick.row.step_requires_signature ? <Field label="امضا"><MySignature /></Field> : null}
+          <div className="req-meta">
+            <span>فرآیند: <b>{quick.row.template_name}</b></span>
+            <span>مرحله: <b>{quick.row.step_title}</b></span>
+            <span>درخواست‌دهنده: <b>{quick.row.requester_name}</b></span>
+          </div>
+          {quick.row.step_requires_signature ? <Field label="امضای شما"><MySignature /></Field> : null}
           <Field label="پی‌نوشت (اختیاری)">
             <textarea className="input" value={quick.comment} autoFocus
               onChange={e => setQuick(q => ({ ...q, comment: e.target.value }))} />
