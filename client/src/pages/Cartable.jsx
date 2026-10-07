@@ -333,7 +333,7 @@ export default function Cartable() {
           onDone={(id) => { const { item, option } = ciReport; setCiReport(null); submitCheckin(item, option, { request_id: id }); }} />
       )}
       {ciStatus && <CheckinStatusModal templateId={ciStatus} onClose={() => setCiStatus(null)} />}
-      {newReq && <NewRequestModal templates={templates} onClose={() => setNewReq(false)} onDone={() => { setNewReq(false); setTab('mine'); load(); toast('درخواست شما ثبت شد'); }} />}
+      {newReq && <NewRequestModal templates={templates} onModuleDone={load} onClose={() => setNewReq(false)} onDone={() => { setNewReq(false); setTab('mine'); load(); toast('درخواست شما ثبت شد'); }} />}
     </div>
   );
 }
@@ -367,7 +367,7 @@ function groupTemplates(templates, departments) {
     (a.key === GENERAL ? 1 : 0) - (b.key === GENERAL ? 1 : 0) || a.name.localeCompare(b.name, 'fa'));
 }
 
-function NewRequestModal({ templates, onClose, onDone, presetTplId }) {
+function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone }) {
   const { toast, settings, user, users, departments } = useStore();
   const attOff = settings?.attachments_enabled === '0'; // [پیوست‌ها] کلید سراسری
   const groups = groupTemplates(templates, departments);
@@ -395,6 +395,23 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId }) {
   // [مسیر پویا] { [step_id]: { approvers, deadline_hours, skip } }
   const [routing, setRouting] = useState({});
   const tpl = groupItems.find(t => t.id === Number(tplId));
+  // [ماژول‌های کارتابل] گزینه‌های سریعِ این فرآیند (مثل «رخ داد / رخ نداد»)
+  let modules = [];
+  try { modules = JSON.parse(tpl?.quick_options || '[]') || []; } catch {}
+  const [mod, setMod] = useState(null);      // گزینهٔ انتخاب‌شده
+  const [modNote, setModNote] = useState('');
+  useEffect(() => { setMod(null); setModNote(''); }, [tplId]);
+  const confirmOnly = mod?.kind === 'confirm';
+  const submitModule = async () => {
+    setBusy(true);
+    try {
+      const r = await api('/workflows/checkins', { method: 'POST',
+        body: { template_id: tpl.id, option_key: mod.key, comment: modNote } });
+      toast(`«${mod.label}» ${r.signed ? 'با امضا ' : ''}ثبت شد`);
+      onClose(); onModuleDone?.();
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
   // مرحله‌هایی که هنگام ثبت باید دربارهٔ آن‌ها تصمیم گرفت
   const dynSteps = (previewSteps.length ? previewSteps : (tpl?.steps || []))
     .filter(st => st.dynamic_approver || st.dynamic_deadline || st.skippable_at_submit);
@@ -445,6 +462,10 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId }) {
         cc, routing,
       } });
       if (r.warning) toast(r.warning, 'error');
+      if (mod?.kind === 'report' && !presetTplId) {
+        await api('/workflows/checkins', { method: 'POST',
+          body: { template_id: tpl.id, option_key: mod.key, request_id: r.id } }).catch(() => {});
+      }
       onDone(r.id);
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
@@ -454,7 +475,13 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId }) {
     <Modal title="ثبت درخواست جدید" onClose={onClose} wide
       footer={<>
         <button className="btn btn-ghost" onClick={onClose}>انصراف</button>
-        <button className="btn btn-primary" disabled={!tpl || !title.trim() || busy} onClick={submit}>ثبت درخواست</button>
+        {confirmOnly ? (
+          <button className="btn btn-primary" disabled={busy} onClick={submitModule}>
+            <Check size={16} /> {tpl?.requester_signature !== 0 ? 'ثبت و امضا' : 'ثبت'}
+          </button>
+        ) : (
+          <button className="btn btn-primary" disabled={!tpl || !title.trim() || busy} onClick={submit}>ثبت درخواست</button>
+        )}
       </>}>
       {/* اول واحد، بعد فرآیندهای همان واحد — فهرست بلندِ همهٔ فرآیندها گیج‌کننده بود */}
       <div className="form-row-wide">
@@ -476,6 +503,35 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId }) {
         </Field>
       </div>
       {tpl?.description && <p style={{ fontSize: 12.8, color: 'var(--text-2)', margin: '-6px 0 14px' }}>{tpl.description}</p>}
+
+      {modules.length > 0 && !presetTplId && (
+        <div className="panel-soft card-pad" style={{ marginBottom: 14 }}>
+          <b style={{ fontSize: 13 }}>وضعیت امروز را انتخاب کنید</b>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+            {modules.map(o => (
+              <button key={o.key} type="button" style={{ minWidth: 110 }}
+                className={`btn ${mod?.key === o.key ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setMod(mod?.key === o.key ? null : o)}>
+                {mod?.key === o.key && <Check size={15} />} {o.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize: 11.8, color: 'var(--text-3)', marginTop: 6 }}>
+            {!mod ? 'گزینه‌ای که با فرم همراه است، فرم را برای گزارش باز نگه می‌دارد.'
+              : confirmOnly ? 'نیازی به پر کردن فرم نیست؛ پاسخ شما با امضا ثبت و به مسئول پیگیری اعلام می‌شود.'
+              : 'فرم زیر را برای گزارش پر کنید.'}
+          </div>
+        </div>
+      )}
+
+      {confirmOnly ? (
+        <>
+          {tpl?.requester_signature !== 0 && <Field label="امضای شما"><MySignature /></Field>}
+          <Field label="توضیح (اختیاری)">
+            <textarea className="input" value={modNote} onChange={e => setModNote(e.target.value)} />
+          </Field>
+        </>
+      ) : (<>
 
       {/* [درخواست‌کننده] همیشه پیدا باشد که این درخواست به نام چه کسی ثبت می‌شود */}
       <div className="panel-soft card-pad" style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -695,6 +751,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId }) {
           </div>
         </div>
       )}
+      </>)}
     </Modal>
   );
 }

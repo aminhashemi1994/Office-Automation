@@ -1976,7 +1976,10 @@ r.post('/checkins', (req, res) => {
   const t = db.prepare('SELECT * FROM workflow_templates WHERE id = ? AND is_active = 1').get(template_id);
   if (!t) return res.status(404).json({ error: 'فرآیند یافت نشد' });
   const cfg = dailyCfg(t);
-  if (!cfg || !dailyRecipients(cfg).has(req.user.id)) return res.status(403).json({ error: 'این فرم برای شما تعریف نشده است' });
+  // گیرندگانِ یادآوری روزانه، یا هرکسی که این فرآیند در محدوده‌اش است (ثبت از پنجرهٔ «درخواست جدید»)
+  if (!(cfg && dailyRecipients(cfg).has(req.user.id)) && !templateInScope(req.user, t)) {
+    return res.status(403).json({ error: 'این فرم برای شما تعریف نشده است' });
+  }
   const opt = quickOptionsOf(t).find(o => o.key === option_key);
   if (!opt) return res.status(400).json({ error: 'گزینهٔ نامعتبر' });
   let reqId = null;
@@ -1999,13 +2002,13 @@ r.post('/checkins', (req, res) => {
     .run(t.id, req.user.id, now.date, opt.key, opt.label, String(comment).slice(0, 1000), signed ? 1 : 0, reqId);
   // هر پاسخ → اعلان به مسئولِ پیگیری (مگر خاموش کرده باشد)
   if (t.owner_user_id && t.owner_user_id !== req.user.id && t.owner_notify !== 'off') {
-    const total = dailyRecipients(cfg).size;
+    const total = cfg ? dailyRecipients(cfg).size : 0;
     const done = db.prepare('SELECT COUNT(*) c FROM workflow_checkins WHERE template_id = ? AND day = ? AND responded_at IS NOT NULL')
       .get(t.id, now.date).c;
     notifyUsers([t.owner_user_id], {
       type: 'workflow',
       title: `${opt.kind === 'report' ? '⚠️' : '✅'} ${t.name}: ${opt.label}`,
-      body: `${req.user.full_name} «${opt.label}» را${signed ? ' با امضا' : ''} ثبت کرد${comment ? ' — ' + String(comment).slice(0, 120) : ''} (${done.toLocaleString('fa-IR')} از ${total.toLocaleString('fa-IR')} نفر پاسخ داده‌اند)`,
+      body: `${req.user.full_name} «${opt.label}» را${signed ? ' با امضا' : ''} ثبت کرد${comment ? ' — ' + String(comment).slice(0, 120) : ''}${total ? ` (${done.toLocaleString('fa-IR')} از ${total.toLocaleString('fa-IR')} نفر پاسخ داده‌اند)` : ''}`,
       link: reqId ? `/cartable/${reqId}` : `/cartable?checkins=${t.id}`,
     });
   }

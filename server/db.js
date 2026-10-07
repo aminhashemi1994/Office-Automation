@@ -1244,6 +1244,10 @@ CREATE TABLE IF NOT EXISTS workflow_checkins (
 );
 CREATE INDEX IF NOT EXISTS idx_checkins_tpl_day ON workflow_checkins(template_id, day);
 `);
+// فرآیندِ «حوادث روزانه» بدون تنظیمِ دستی هم ماژولِ «رخ داد / رخ نداد» داشته باشد (فقط اگر خالی است)
+db.prepare(`UPDATE workflow_templates SET quick_options = ?
+  WHERE (quick_options IS NULL OR quick_options = '') AND name LIKE '%حوادث%'`)
+  .run(JSON.stringify([{ key: 'occurred', label: 'رخ داد', kind: 'report' }, { key: 'not_occurred', label: 'رخ نداد', kind: 'confirm' }]));
 
 // [پرسش و پاسخ] پرسش از فردی مشخص (target_user_id) و پاسخِ وصل‌شده به آن (parent_id)
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN parent_id INTEGER'); } catch {}
