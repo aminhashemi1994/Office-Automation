@@ -86,10 +86,8 @@ export default function Cartable() {
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
   };
-  const pickOption = (item, option) => {
-    if (option.kind === 'report') setCiReport({ item, option });
-    else setCiConfirm({ item, option, comment: '' });
-  };
+  // همهٔ گزینه‌ها (رخ داد / رخ نداد) یک شکل باز می‌شوند: امضا + توضیح
+  const pickOption = (item, option) => setCiConfirm({ item, option, comment: '' });
   // فرآیندهای روزانه‌ای که من پیگیرشان هستم
   const followedDaily = templates.filter(t => {
     if (t.owner_user_id !== user.id && t.created_by !== user.id) return false;
@@ -175,9 +173,9 @@ export default function Cartable() {
                   {c.request_id && <Link className="btn btn-ghost btn-sm" to={`/cartable/${c.request_id}`}>دیدن گزارش</Link>}
                 </>
               ) : c.options.map(o => (
-                <button key={o.key} className={`btn btn-sm ${o.kind === 'report' ? 'btn-ghost' : 'btn-primary'}`}
+                <button key={o.key} className="btn btn-sm btn-primary"
                   disabled={busy} onClick={() => pickOption(c, o)}>
-                  {o.kind === 'report' ? <Plus size={14} /> : <Check size={14} />} {o.label}
+                  <Check size={14} /> {o.label}
                 </button>
               ))}
             </div>
@@ -401,7 +399,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
   const [mod, setMod] = useState(null);      // گزینهٔ انتخاب‌شده
   const [modNote, setModNote] = useState('');
   useEffect(() => { setMod(null); setModNote(''); }, [tplId]);
-  const confirmOnly = mod?.kind === 'confirm';
+  const confirmOnly = !!mod; // هر گزینه‌ای انتخاب شود، با امضا و توضیح ثبت می‌شود
   const submitModule = async () => {
     setBusy(true);
     try {
@@ -462,10 +460,6 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
         cc, routing,
       } });
       if (r.warning) toast(r.warning, 'error');
-      if (mod?.kind === 'report' && !presetTplId) {
-        await api('/workflows/checkins', { method: 'POST',
-          body: { template_id: tpl.id, option_key: mod.key, request_id: r.id } }).catch(() => {});
-      }
       onDone(r.id);
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
@@ -517,9 +511,8 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
             ))}
           </div>
           <div style={{ fontSize: 11.8, color: 'var(--text-3)', marginTop: 6 }}>
-            {!mod ? 'گزینه‌ای که با فرم همراه است، فرم را برای گزارش باز نگه می‌دارد.'
-              : confirmOnly ? 'نیازی به پر کردن فرم نیست؛ پاسخ شما با امضا ثبت و به مسئول پیگیری اعلام می‌شود.'
-              : 'فرم زیر را برای گزارش پر کنید.'}
+            {!mod ? 'با انتخاب یک گزینه، پاسخ امروز با امضا ثبت و به مسئول پیگیری اعلام می‌شود.'
+              : 'پاسخ شما با امضا ثبت و به مسئول پیگیری اعلام می‌شود.'}
           </div>
         </div>
       )}
@@ -803,7 +796,7 @@ function CheckinStatusModal({ templateId, onClose }) {
       {responded.map(p => (
         <Row key={p.id} p={p}>
           {p.comment && <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}>{p.comment}</span>}
-          <span className={`badge ${p.request_id ? 'badge-red' : 'badge-green'}`}>{p.option_label}</span>
+          <span className={`badge ${data.options.find(o => o.key === p.option_key)?.kind === 'report' ? 'badge-red' : 'badge-green'}`}>{p.option_label}</span>
           {p.signed && <span className="badge badge-sky">امضا شد</span>}
           {p.request_id && <Link to={`/cartable/${p.request_id}`} onClick={onClose} style={{ fontSize: 12 }}>گزارش</Link>}
           <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}>{fmtDateTime(p.responded_at)}</span>

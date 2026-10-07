@@ -1983,10 +1983,11 @@ r.post('/checkins', (req, res) => {
   const opt = quickOptionsOf(t).find(o => o.key === option_key);
   if (!opt) return res.status(400).json({ error: 'گزینهٔ نامعتبر' });
   let reqId = null;
-  if (opt.kind === 'report') {
+  // گزارشِ پیوسته اختیاری است؛ «رخ داد» هم مثل بقیهٔ گزینه‌ها با امضا و توضیح ثبت می‌شود
+  if (request_id) {
     const rq = db.prepare('SELECT id FROM workflow_requests WHERE id = ? AND template_id = ? AND requester_id = ?')
       .get(request_id, t.id, req.user.id);
-    if (!rq) return res.status(400).json({ error: 'برای این گزینه ابتدا باید فرم را ثبت کنید' });
+    if (!rq) return res.status(400).json({ error: 'درخواستِ پیوست‌شده معتبر نیست' });
     reqId = rq.id;
   }
   const prev = db.prepare('SELECT responded_at FROM workflow_checkins WHERE template_id = ? AND user_id = ? AND day = ?')

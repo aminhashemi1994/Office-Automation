@@ -56,8 +56,8 @@ function audienceIds(a) {
   return db.prepare('SELECT id FROM users WHERE is_active = 1').all().map(u => u.id);
 }
 
-// سازندهٔ اطلاعیه همیشه می‌تواند ویرایش/حذف کند؛ مدیریت هم
-const canEdit = (a, user) => a.created_by === user.id || canAccessEverywhere(user);
+// فقط سازندهٔ اطلاعیه می‌تواند آن را ویرایش/حذف کند
+const canEdit = (a, user) => a.created_by === user.id;
 
 // منتشرشده و منقضی‌نشده؟
 const live = `a.is_active = 1
@@ -186,7 +186,7 @@ r.put('/:id', (req, res) => {
   const a = db.prepare('SELECT * FROM announcements WHERE id = ?').get(req.params.id);
   if (!a) return res.status(404).json({ error: 'اطلاعیه یافت نشد' });
   if (!canEdit(a, req.user)) {
-    return res.status(403).json({ error: 'فقط منتشرکنندهٔ اطلاعیه یا مدیریت می‌تواند آن را ویرایش کند' });
+    return res.status(403).json({ error: 'فقط سازندهٔ اطلاعیه می‌تواند آن را ویرایش کند' });
   }
   const c = cleanBody(req.body || {}, a);
   db.prepare(`UPDATE announcements SET title = ?, body = ?, kind = ?, audience = ?, dept_ids = ?, user_ids = ?,
@@ -211,7 +211,7 @@ r.delete('/:id', (req, res) => {
   const a = db.prepare('SELECT * FROM announcements WHERE id = ?').get(req.params.id);
   if (!a) return res.status(404).json({ error: 'اطلاعیه یافت نشد' });
   if (!canEdit(a, req.user)) {
-    return res.status(403).json({ error: 'فقط منتشرکنندهٔ اطلاعیه یا مدیریت می‌تواند آن را حذف کند' });
+    return res.status(403).json({ error: 'فقط سازندهٔ اطلاعیه می‌تواند آن را حذف کند' });
   }
   db.prepare('DELETE FROM announcements WHERE id = ?').run(a.id);
   res.json({ ok: true });

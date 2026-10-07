@@ -1224,7 +1224,7 @@ try { db.exec('ALTER TABLE workflow_templates ADD COLUMN owner_user_id INTEGER')
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN owner_notify TEXT DEFAULT 'each'"); } catch {}
 
 // [ماژول‌های کارتابل] گزینه‌های سریعِ هر فرم، مثل «رخ داد / رخ نداد» برای حوادث روزانه:
-// [{key, label, kind:'confirm'|'report'}] — confirm فقط ثبت و امضا، report فرمِ درخواست را باز می‌کند
+// [{key, label, kind:'confirm'|'report'}] — هر دو با امضا و توضیح ثبت می‌شوند؛ report (هشدار) برای مسئول پیگیری برجسته است
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN quick_options TEXT DEFAULT ''"); } catch {}
 // پاسخِ روزانهٔ هر گیرندهٔ یادآوری: چه کسی دیده، چه کسی پاسخ داده (و با کدام گزینه)
 db.exec(`

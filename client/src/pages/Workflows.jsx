@@ -916,8 +916,8 @@ function TemplateModal({ tpl, onClose, onDone }) {
           </button>
         </div>
         <div style={{ fontSize: 11.8, color: 'var(--text-3)', marginTop: 4 }}>
-          گیرندگانِ «یادآوری روزانه» هر روز این دکمه‌ها را در کارتابلشان می‌بینند. «فقط ثبت و امضا» پاسخ را مستقیم ثبت می‌کند؛
-          «باز کردن فرم» فرمِ همین فرآیند را برای گزارش باز می‌کند. مسئولِ پیگیری با هر پاسخ اعلان می‌گیرد.
+          گیرندگانِ «یادآوری روزانه» هر روز این دکمه‌ها را در کارتابلشان می‌بینند و با امضا و توضیح پاسخ می‌دهند.
+          گزینهٔ «هشدار» (مثل رخ داد) در اعلان و گزارشِ مسئول پیگیری برجسته نشان داده می‌شود.
         </div>
         {quickOpts.length > 0 && !daily.enabled && (
           <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 6 }}>برای نمایش در کارتابل، «یادآوری روزانه» را روشن کنید.</div>
@@ -927,7 +927,7 @@ function TemplateModal({ tpl, onClose, onDone }) {
             <input className="input" style={{ width: 180 }} placeholder="عنوان دکمه" value={o.label}
               onChange={e => setQO(i, { label: e.target.value })} />
             <Segmented size="sm" value={o.kind} onChange={v => setQO(i, { kind: v })}
-              options={[{ value: 'confirm', label: 'فقط ثبت و امضا', tone: 'success' }, { value: 'report', label: 'باز کردن فرم', tone: 'primary' }]} />
+              options={[{ value: 'confirm', label: 'عادی', tone: 'success' }, { value: 'report', label: 'هشدار', tone: 'primary' }]} />
             <button type="button" className="icon-btn" style={{ color: 'var(--red)' }} title="حذف"
               onClick={() => setQuickOpts(l => l.filter((_, j) => j !== i))}><Trash2 size={14} /></button>
           </div>
