@@ -56,6 +56,9 @@ function audienceIds(a) {
   return db.prepare('SELECT id FROM users WHERE is_active = 1').all().map(u => u.id);
 }
 
+// سازندهٔ اطلاعیه همیشه می‌تواند ویرایش/حذف کند؛ مدیریت هم
+const canEdit = (a, user) => a.created_by === user.id || canAccessEverywhere(user);
+
 // منتشرشده و منقضی‌نشده؟
 const live = `a.is_active = 1
   AND (a.publish_at IS NULL OR a.publish_at = '' OR datetime(a.publish_at) <= datetime('now'))
@@ -70,27 +73,30 @@ r.get('/', (req, res) => {
       (SELECT read_at FROM announcement_reads x WHERE x.announcement_id = a.id AND x.user_id = @uid) AS my_read_at,
       (SELECT acked_at FROM announcement_reads x WHERE x.announcement_id = a.id AND x.user_id = @uid) AS my_acked_at
     FROM announcements a LEFT JOIN users u ON u.id = a.created_by
-    WHERE (@manage = 1 AND @mine = 1) OR ${live}
+    WHERE (@mine = 1 AND (@manage = 1 OR a.created_by = @uid)) OR ${live}
     ORDER BY a.pinned DESC, a.id DESC LIMIT 200`)
     .all({ uid: req.user.id, manage: canPublish(req.user) ? 1 : 0, mine: mine ? 1 : 0 });
 
   const canManage = canPublish(req.user);
   const list = rows
-    .filter(a => (mine && canManage ? a.created_by === req.user.id || canAccessEverywhere(req.user) : targets(a, req.user)))
+    .filter(a => (mine ? canEdit(a, req.user) : targets(a, req.user)))
     .map(a => ({
       ...a,
+      can_edit: canEdit(a, req.user),
       dept_ids: parseJson(a.dept_ids, []), user_ids: parseJson(a.user_ids, []),
       attachments: parseJson(a.attachments, []),
-      audience_count: canManage ? audienceIds(a).length : undefined,
+      audience_count: canManage || a.created_by === req.user.id ? audienceIds(a).length : undefined,
     }));
-  res.json({ announcements: list, can_publish: canManage, unread: list.filter(a => !a.my_read_at).length });
+  const hasOwn = !!db.prepare('SELECT 1 FROM announcements WHERE created_by = ? LIMIT 1').get(req.user.id);
+  res.json({ announcements: list, can_publish: canManage, has_own: hasOwn,
+    unread: list.filter(a => !a.my_read_at).length });
 });
 
 r.get('/:id', (req, res) => {
   const a = db.prepare(`SELECT a.*, u.full_name AS author_name FROM announcements a
     LEFT JOIN users u ON u.id = a.created_by WHERE a.id = ?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'اطلاعیه یافت نشد' });
-  const manage = canPublish(req.user);
+  const manage = canPublish(req.user) || a.created_by === req.user.id;
   if (!targets(a, req.user) && !manage) return res.status(403).json({ error: 'این اطلاعیه برای شما نیست' });
   // باز کردن = خوانده شد
   db.prepare(`INSERT INTO announcement_reads (announcement_id, user_id) VALUES (?, ?)
@@ -100,15 +106,24 @@ r.get('/:id', (req, res) => {
     FROM announcement_reads x JOIN users u ON u.id = x.user_id
     LEFT JOIN departments d ON d.id = u.department_id
     WHERE x.announcement_id = ? ORDER BY x.read_at DESC`).all(a.id) : [];
+  // [پیگیری] مخاطبانی که هنوز اطلاعیه را ندیده‌اند
+  let notSeen = [];
+  if (manage) {
+    const seen = new Set(readers.map(x => x.user_id));
+    const ids = audienceIds(a).filter(id => !seen.has(id) && id !== a.created_by);
+    const uq = db.prepare(`SELECT u.id AS user_id, u.full_name, d.name AS department_name
+      FROM users u LEFT JOIN departments d ON d.id = u.department_id WHERE u.id = ?`);
+    notSeen = ids.map(id => uq.get(id)).filter(Boolean);
+  }
   const my = db.prepare('SELECT * FROM announcement_reads WHERE announcement_id = ? AND user_id = ?')
     .get(a.id, req.user.id);
   res.json({
     announcement: { ...a, dept_ids: parseJson(a.dept_ids, []), user_ids: parseJson(a.user_ids, []),
       attachments: parseJson(a.attachments, []) },
-    readers,
+    readers, not_seen: notSeen,
     audience_count: manage ? audienceIds(a).length : undefined,
     my_read_at: my?.read_at || null, my_acked_at: my?.acked_at || null,
-    can_manage: manage && (a.created_by === req.user.id || canAccessEverywhere(req.user)),
+    can_manage: canEdit(a, req.user),
   });
 });
 
@@ -170,7 +185,7 @@ export function notifyAudience(a, actor) {
 r.put('/:id', (req, res) => {
   const a = db.prepare('SELECT * FROM announcements WHERE id = ?').get(req.params.id);
   if (!a) return res.status(404).json({ error: 'اطلاعیه یافت نشد' });
-  if (!canPublish(req.user) || (a.created_by !== req.user.id && !canAccessEverywhere(req.user))) {
+  if (!canEdit(a, req.user)) {
     return res.status(403).json({ error: 'فقط منتشرکنندهٔ اطلاعیه یا مدیریت می‌تواند آن را ویرایش کند' });
   }
   const c = cleanBody(req.body || {}, a);
@@ -195,8 +210,8 @@ r.put('/:id', (req, res) => {
 r.delete('/:id', (req, res) => {
   const a = db.prepare('SELECT * FROM announcements WHERE id = ?').get(req.params.id);
   if (!a) return res.status(404).json({ error: 'اطلاعیه یافت نشد' });
-  if (!canPublish(req.user) || (a.created_by !== req.user.id && !canAccessEverywhere(req.user))) {
-    return res.status(403).json({ error: 'دسترسی غیرمجاز' });
+  if (!canEdit(a, req.user)) {
+    return res.status(403).json({ error: 'فقط منتشرکنندهٔ اطلاعیه یا مدیریت می‌تواند آن را حذف کند' });
   }
   db.prepare('DELETE FROM announcements WHERE id = ?').run(a.id);
   res.json({ ok: true });
@@ -218,7 +233,7 @@ r.post('/:id/ack', (req, res) => {
 r.post('/:id/renotify', (req, res) => {
   const a = db.prepare('SELECT * FROM announcements WHERE id = ?').get(req.params.id);
   if (!a) return res.status(404).json({ error: 'اطلاعیه یافت نشد' });
-  if (!canPublish(req.user)) return res.status(403).json({ error: 'دسترسی غیرمجاز' });
+  if (!canEdit(a, req.user)) return res.status(403).json({ error: 'دسترسی غیرمجاز' });
   const seen = new Set(db.prepare('SELECT user_id FROM announcement_reads WHERE announcement_id = ?')
     .all(a.id).map(x => x.user_id));
   const pending = audienceIds(a).filter(id => !seen.has(id) && id !== a.created_by);

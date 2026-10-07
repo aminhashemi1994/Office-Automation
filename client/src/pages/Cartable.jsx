@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Link } from 'react-router-dom';
-import { Plus, Clock, Search, Paperclip, X, Check, GitBranch } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Plus, Clock, Search, Paperclip, X, Check, GitBranch, CalendarCheck, Users2, Bell, Eye } from 'lucide-react';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtRelative, fmtDateTime, parseDate, fa } from '../utils.js';
@@ -37,6 +37,12 @@ export default function Cartable() {
   const treesRef = useRef(trees); treesRef.current = trees;
   const [quick, setQuick] = useState(null); // {row, comment} — تایید و امضا از همین کارتابل
   const [busy, setBusy] = useState(false);
+  // [ماژول‌های کارتابل] پاسخ‌های روزانهٔ امروزِ من (مثل «رخ داد / رخ نداد»)
+  const [checkins, setCheckins] = useState([]);
+  const [ciConfirm, setCiConfirm] = useState(null); // {item, option, comment}
+  const [ciReport, setCiReport] = useState(null);   // {item, option} — فرم برای گزارش باز است
+  const [ciStatus, setCiStatus] = useState(null);   // templateId — گزارشِ «چه کسی پاسخ داده»
+  const [params, setParams] = useSearchParams();
 
   const myDept = departments.find(d => d.id === user.department_id);
   // مدیرِ حداقل یک واحد (مدل چندمدیره) یا مدیر سامانه/واحد مدیریت → دسترسی به «همه درخواست‌ها»
@@ -51,10 +57,12 @@ export default function Cartable() {
       api('/workflows/templates'),
       api('/workflows/requests/following').catch(() => ({ requests: [] })),
     ]);
+    const ci = await api('/workflows/checkins/today').catch(() => ({ items: [], pending: 0 }));
+    setCheckins(ci.items || []);
     setInbox(i.requests); setMine(m.requests); setFollowing(f.requests || []);
     // درخت‌های باز، با دادهٔ تازه به‌روز شوند
     Object.keys(treesRef.current).forEach(id => openTree(Number(id), true));
-    setCartableCount(i.requests.length);
+    setCartableCount(i.requests.length + (ci.pending || 0));
     setTemplates(t.templates.filter(x => x.is_active));
     if (canBuild) {
       const a = await api('/workflows/requests/all');
@@ -62,6 +70,32 @@ export default function Cartable() {
     }
   };
   useEffect(() => { load(); return on('notification', load); }, []);
+  // لینکِ اعلانِ پاسخ‌ها: /cartable?checkins=<templateId>
+  useEffect(() => {
+    const id = Number(params.get('checkins'));
+    if (id) { setCiStatus(id); setParams({}, { replace: true }); }
+  }, [params]);
+
+  const submitCheckin = async (item, option, extra = {}) => {
+    setBusy(true);
+    try {
+      const r = await api('/workflows/checkins', { method: 'POST',
+        body: { template_id: item.template_id, option_key: option.key, ...extra } });
+      setCiConfirm(null); setCiReport(null); await load();
+      toast(`«${option.label}» ${r.signed ? 'با امضا ' : ''}ثبت شد`);
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+  const pickOption = (item, option) => {
+    if (option.kind === 'report') setCiReport({ item, option });
+    else setCiConfirm({ item, option, comment: '' });
+  };
+  // فرآیندهای روزانه‌ای که من پیگیرشان هستم
+  const followedDaily = templates.filter(t => {
+    if (t.owner_user_id !== user.id && t.created_by !== user.id) return false;
+    try { return !!JSON.parse(t.daily_reminder || '{}')?.enabled && JSON.parse(t.quick_options || '[]').length > 0; }
+    catch { return false; }
+  });
 
   const quickApprove = async () => {
     setBusy(true);
@@ -93,10 +127,12 @@ export default function Cartable() {
       <div className="page-head">
         <div className="tabs">
           <button className={`tab ${tab === 'inbox' ? 'active' : ''}`} onClick={() => setTab('inbox')}>
-            در انتظار اقدام من {inbox.length > 0 && <span className="badge-count">{inbox.length.toLocaleString('fa-IR')}</span>}
+            در انتظار اقدام من {(inbox.length + checkins.filter(c => !c.responded_at).length) > 0 && (
+              <span className="badge-count">{(inbox.length + checkins.filter(c => !c.responded_at).length).toLocaleString('fa-IR')}</span>
+            )}
           </button>
           <button className={`tab ${tab === 'mine' ? 'active' : ''}`} onClick={() => setTab('mine')}>درخواست‌های من</button>
-          {following.length > 0 && (
+          {(following.length > 0 || followedDaily.length > 0) && (
             <button className={`tab ${tab === 'following' ? 'active' : ''}`} onClick={() => setTab('following')}
               title="درخواست‌های فرآیندهایی که شما مسئول پیگیری‌شان هستید">
               پیگیری فرآیندها
@@ -118,6 +154,46 @@ export default function Cartable() {
           <button className="btn btn-primary" onClick={() => setNewReq(true)}><Plus size={17} /> درخواست جدید</button>
         </div>
       </div>
+
+      {/* [ماژول‌های کارتابل] پاسخِ روزانه با یک کلیک */}
+      {tab === 'inbox' && checkins.length > 0 && (
+        <div style={{ display: 'grid', gap: 10, marginBottom: 14 }}>
+          {checkins.map(c => (
+            <div key={c.template_id} className="card card-pad"
+              style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                borderInlineStart: `4px solid ${c.responded_at ? 'var(--green)' : 'var(--amber)'}` }}>
+              <CalendarCheck size={20} style={{ color: c.responded_at ? 'var(--green)' : 'var(--amber)' }} />
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <b>{c.template_name}</b>
+                <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+                  {c.responded_at ? <>پاسخ امروز ثبت شد: <b>{c.option_label}</b> · {fmtRelative(c.responded_at)}</> : 'پاسخ امروز را ثبت کنید'}
+                </div>
+              </div>
+              {c.responded_at ? (
+                <>
+                  <span className="badge badge-green"><Check size={12} /> {c.option_label}</span>
+                  {c.request_id && <Link className="btn btn-ghost btn-sm" to={`/cartable/${c.request_id}`}>دیدن گزارش</Link>}
+                </>
+              ) : c.options.map(o => (
+                <button key={o.key} className={`btn btn-sm ${o.kind === 'report' ? 'btn-ghost' : 'btn-primary'}`}
+                  disabled={busy} onClick={() => pickOption(c, o)}>
+                  {o.kind === 'report' ? <Plus size={14} /> : <Check size={14} />} {o.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+      {/* [پیگیری] چه کسانی امروز پاسخ داده‌اند */}
+      {tab === 'following' && followedDaily.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+          {followedDaily.map(t => (
+            <button key={t.id} className="btn btn-ghost" onClick={() => setCiStatus(t.id)}>
+              <Users2 size={15} /> پاسخ‌های امروز: {t.name}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="card">
         {rows.length === 0 ? (
@@ -232,6 +308,31 @@ export default function Cartable() {
         </Modal>
       )}
 
+      {ciConfirm && (
+        <Modal title={`${ciConfirm.item.template_name}: ${ciConfirm.option.label}`} onClose={() => setCiConfirm(null)}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setCiConfirm(null)}>انصراف</button>
+            <button className="btn btn-primary" disabled={busy}
+              onClick={() => submitCheckin(ciConfirm.item, ciConfirm.option, { comment: ciConfirm.comment })}>
+              <Check size={16} /> {ciConfirm.item.requires_signature ? 'ثبت و امضا' : 'ثبت'}
+            </button>
+          </>}>
+          <p style={{ fontSize: 13, marginTop: 0 }}>
+            پاسخِ امروزِ شما برای «{ciConfirm.item.template_name}»: <b>{ciConfirm.option.label}</b>
+          </p>
+          {ciConfirm.item.requires_signature ? <Field label="امضای شما"><MySignature /></Field> : null}
+          <Field label="توضیح (اختیاری)">
+            <textarea className="input" value={ciConfirm.comment}
+              onChange={e => setCiConfirm(q => ({ ...q, comment: e.target.value }))} />
+          </Field>
+        </Modal>
+      )}
+      {ciReport && (
+        <NewRequestModal templates={templates} presetTplId={ciReport.item.template_id}
+          onClose={() => setCiReport(null)}
+          onDone={(id) => { const { item, option } = ciReport; setCiReport(null); submitCheckin(item, option, { request_id: id }); }} />
+      )}
+      {ciStatus && <CheckinStatusModal templateId={ciStatus} onClose={() => setCiStatus(null)} />}
       {newReq && <NewRequestModal templates={templates} onClose={() => setNewReq(false)} onDone={() => { setNewReq(false); setTab('mine'); load(); toast('درخواست شما ثبت شد'); }} />}
     </div>
   );
@@ -266,18 +367,20 @@ function groupTemplates(templates, departments) {
     (a.key === GENERAL ? 1 : 0) - (b.key === GENERAL ? 1 : 0) || a.name.localeCompare(b.name, 'fa'));
 }
 
-function NewRequestModal({ templates, onClose, onDone }) {
+function NewRequestModal({ templates, onClose, onDone, presetTplId }) {
   const { toast, settings, user, users, departments } = useStore();
   const attOff = settings?.attachments_enabled === '0'; // [پیوست‌ها] کلید سراسری
   const groups = groupTemplates(templates, departments);
   // پیش‌فرض روی واحدِ خودِ کاربر — بیشترِ درخواست‌ها همان‌جاست
   const [groupKey, setGroupKey] = useState(() => {
+    const preset = presetTplId && groups.find(g => g.items.some(t => t.id === presetTplId));
+    if (preset) return preset.key;
     const mine = groups.find(g => g.key === String(user?.department_id));
     return (mine || groups[0])?.key || GENERAL;
   });
   const group = groups.find(g => g.key === groupKey) || groups[0];
   const groupItems = group?.items || [];
-  const [tplId, setTplId] = useState(groupItems[0]?.id || '');
+  const [tplId, setTplId] = useState(presetTplId || groupItems[0]?.id || '');
   const [title, setTitle] = useState('');
   const [data, setData] = useState({});
   const [busy, setBusy] = useState(false);
@@ -342,7 +445,7 @@ function NewRequestModal({ templates, onClose, onDone }) {
         cc, routing,
       } });
       if (r.warning) toast(r.warning, 'error');
-      onDone();
+      onDone(r.id);
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
   };
@@ -592,6 +695,71 @@ function NewRequestModal({ templates, onClose, onDone }) {
           </div>
         </div>
       )}
+    </Modal>
+  );
+}
+
+// [پیگیری ماژول‌ها] امروز چه کسی دیده، چه کسی پاسخ داده و چه کسی هنوز ندیده
+function CheckinStatusModal({ templateId, onClose }) {
+  const { toast } = useStore();
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    api(`/workflows/checkins/status/${templateId}`).then(setData)
+      .catch(e => { toast(e.message, 'error'); onClose(); });
+  }, [templateId]);
+  if (!data) return null;
+  const responded = data.people.filter(p => p.responded_at);
+  const seenOnly = data.people.filter(p => !p.responded_at && p.seen_at);
+  const notSeen = data.people.filter(p => !p.responded_at && !p.seen_at);
+  const renotify = async () => {
+    try {
+      const r = await api(`/workflows/checkins/status/${templateId}/renotify`, { method: 'POST' });
+      toast(r.notified ? `یادآوری برای ${fa(r.notified)} نفر فرستاده شد` : 'همه پاسخ داده‌اند');
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  const Row = ({ p, children }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.8, padding: '4px 0' }}>
+      <Avatar name={p.full_name} color={p.avatar_color} size={24} />
+      <span style={{ flex: 1 }}>{p.full_name}
+        {p.department_name && <span style={{ color: 'var(--text-3)' }}> · {p.department_name}</span>}
+      </span>
+      {children}
+    </div>
+  );
+  return (
+    <Modal title={`پاسخ‌های امروز: ${data.template.name}`} onClose={onClose} wide
+      footer={<>
+        <button className="btn btn-ghost" onClick={onClose}>بستن</button>
+        {(seenOnly.length + notSeen.length) > 0 && (
+          <button className="btn btn-primary" onClick={renotify}><Bell size={15} /> یادآوری به پاسخ‌نداده‌ها</button>
+        )}
+      </>}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        <span className="badge badge-green">{fa(responded.length)} پاسخ داده</span>
+        {data.options.map(o => (
+          <span key={o.key} className="badge badge-gray">{o.label}: {fa(responded.filter(p => p.option_key === o.key).length)}</span>
+        ))}
+        <span className="badge badge-sky">{fa(seenOnly.length)} دیده، بی‌پاسخ</span>
+        <span className="badge badge-amber">{fa(notSeen.length)} هنوز ندیده</span>
+      </div>
+      {responded.length > 0 && <b style={{ fontSize: 13 }}>پاسخ داده‌اند</b>}
+      {responded.map(p => (
+        <Row key={p.id} p={p}>
+          {p.comment && <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}>{p.comment}</span>}
+          <span className={`badge ${p.request_id ? 'badge-red' : 'badge-green'}`}>{p.option_label}</span>
+          {p.signed && <span className="badge badge-sky">امضا شد</span>}
+          {p.request_id && <Link to={`/cartable/${p.request_id}`} onClick={onClose} style={{ fontSize: 12 }}>گزارش</Link>}
+          <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}>{fmtDateTime(p.responded_at)}</span>
+        </Row>
+      ))}
+      {seenOnly.length > 0 && <b style={{ fontSize: 13, display: 'block', marginTop: 12 }}>دیده‌اند ولی پاسخ نداده‌اند</b>}
+      {seenOnly.map(p => (
+        <Row key={p.id} p={p}><Eye size={13} style={{ color: 'var(--text-3)' }} />
+          <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}>{fmtRelative(p.seen_at)}</span></Row>
+      ))}
+      {notSeen.length > 0 && <b style={{ fontSize: 13, display: 'block', marginTop: 12 }}>هنوز ندیده‌اند</b>}
+      {notSeen.map(p => <Row key={p.id} p={p}><span className="badge badge-amber">ندیده</span></Row>)}
+      {!data.people.length && <div className="empty">برای این فرآیند گیرندهٔ یادآوری روزانه تعریف نشده است</div>}
     </Modal>
   );
 }

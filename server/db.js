@@ -1223,6 +1223,28 @@ try { db.exec("ALTER TABLE workflow_templates ADD COLUMN reminder_last_sent TEXT
 try { db.exec('ALTER TABLE workflow_templates ADD COLUMN owner_user_id INTEGER'); } catch {}
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN owner_notify TEXT DEFAULT 'each'"); } catch {}
 
+// [ماژول‌های کارتابل] گزینه‌های سریعِ هر فرم، مثل «رخ داد / رخ نداد» برای حوادث روزانه:
+// [{key, label, kind:'confirm'|'report'}] — confirm فقط ثبت و امضا، report فرمِ درخواست را باز می‌کند
+try { db.exec("ALTER TABLE workflow_templates ADD COLUMN quick_options TEXT DEFAULT ''"); } catch {}
+// پاسخِ روزانهٔ هر گیرندهٔ یادآوری: چه کسی دیده، چه کسی پاسخ داده (و با کدام گزینه)
+db.exec(`
+CREATE TABLE IF NOT EXISTS workflow_checkins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  template_id INTEGER NOT NULL REFERENCES workflow_templates(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  seen_at TEXT,
+  responded_at TEXT,
+  option_key TEXT,
+  option_label TEXT,
+  comment TEXT DEFAULT '',
+  signed INTEGER DEFAULT 0,
+  request_id INTEGER,
+  UNIQUE(template_id, user_id, day)
+);
+CREATE INDEX IF NOT EXISTS idx_checkins_tpl_day ON workflow_checkins(template_id, day);
+`);
+
 // [پرسش و پاسخ] پرسش از فردی مشخص (target_user_id) و پاسخِ وصل‌شده به آن (parent_id)
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN parent_id INTEGER'); } catch {}
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN target_user_id INTEGER'); } catch {}
