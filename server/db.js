@@ -348,6 +348,21 @@ CREATE TABLE IF NOT EXISTS app_settings (
   for (const [k, v] of Object.entries(defaults)) ins.run(k, v);
 }
 
+// [دستیار] دیتابیس‌های قدیمی مقدارهای ثابتِ «خاموش / gpt-4o-mini / openai» را گرفته بودند و
+// پیش‌فرضِ .env هرگز اعمال نمی‌شد. یک‌بار، اگر کلیدی در تنظیمات ذخیره نشده، به «پیش‌فرض» برمی‌گردند.
+{
+  const get = (k) => db.prepare('SELECT value FROM app_settings WHERE key = ?').get(k)?.value;
+  if (!get('ai_env_defaults_v1')) {
+    if (!String(get('ai_api_key') || '').trim()) {
+      const set = db.prepare('UPDATE app_settings SET value = ? WHERE key = ? AND value = ?');
+      set.run('', 'ai_enabled', '0');
+      set.run('', 'ai_model', 'gpt-4o-mini');
+      set.run('', 'ai_base_url', 'https://api.openai.com/v1');
+    }
+    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ai_env_defaults_v1', '1')").run();
+  }
+}
+
 // مسدودسازی کاربران
 db.exec(`
 CREATE TABLE IF NOT EXISTS blocked_users (
@@ -834,6 +849,21 @@ CREATE INDEX IF NOT EXISTS idx_crm_insights ON crm_insights(scope, target_user_i
   for (const [k, v] of Object.entries(defaults)) ins.run(k, v);
 }
 
+// [دستیار] دیتابیس‌های قدیمی مقدارهای ثابتِ «خاموش / gpt-4o-mini / openai» را گرفته بودند و
+// پیش‌فرضِ .env هرگز اعمال نمی‌شد. یک‌بار، اگر کلیدی در تنظیمات ذخیره نشده، به «پیش‌فرض» برمی‌گردند.
+{
+  const get = (k) => db.prepare('SELECT value FROM app_settings WHERE key = ?').get(k)?.value;
+  if (!get('ai_env_defaults_v1')) {
+    if (!String(get('ai_api_key') || '').trim()) {
+      const set = db.prepare('UPDATE app_settings SET value = ? WHERE key = ? AND value = ?');
+      set.run('', 'ai_enabled', '0');
+      set.run('', 'ai_model', 'gpt-4o-mini');
+      set.run('', 'ai_base_url', 'https://api.openai.com/v1');
+    }
+    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ai_env_defaults_v1', '1')").run();
+  }
+}
+
 // ============================================================================
 //  مرخصی — سقفِ سالانهٔ هر نفر و دفترِ کسر/افزایش مانده
 //  درخواستِ مرخصی روی همان موتور گردش‌کار ثبت می‌شود؛ فرآیندِ نشان‌دار (leave_enabled)
@@ -881,6 +911,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_leave_ledger_request ON leave_ledger(reque
   };
   const ins = db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(defaults)) ins.run(k, v);
+}
+
+// [دستیار] دیتابیس‌های قدیمی مقدارهای ثابتِ «خاموش / gpt-4o-mini / openai» را گرفته بودند و
+// پیش‌فرضِ .env هرگز اعمال نمی‌شد. یک‌بار، اگر کلیدی در تنظیمات ذخیره نشده، به «پیش‌فرض» برمی‌گردند.
+{
+  const get = (k) => db.prepare('SELECT value FROM app_settings WHERE key = ?').get(k)?.value;
+  if (!get('ai_env_defaults_v1')) {
+    if (!String(get('ai_api_key') || '').trim()) {
+      const set = db.prepare('UPDATE app_settings SET value = ? WHERE key = ? AND value = ?');
+      set.run('', 'ai_enabled', '0');
+      set.run('', 'ai_model', 'gpt-4o-mini');
+      set.run('', 'ai_base_url', 'https://api.openai.com/v1');
+    }
+    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ai_env_defaults_v1', '1')").run();
+  }
 }
 
 // ---------- مایگریشن‌های CRM ----------
@@ -1089,15 +1134,31 @@ try { db.exec('ALTER TABLE notes ADD COLUMN sort_order INTEGER DEFAULT 0'); } ca
   const defaults = {
     // اگر '1' شود، انتخاب دسته‌بندی (پروژه) هنگام ساخت وظیفه اجباری می‌شود
     tasks_require_project: '0',
-    // پشتیبانی هوشمند — پیش‌فرض خاموش؛ سامانه بدون آن کاملاً آفلاین کار می‌کند
-    ai_enabled: '0',
-    ai_base_url: 'https://api.openai.com/v1',
-    ai_model: 'gpt-4o-mini',
+    // دستیار هوشمند — خالی یعنی «پیش‌فرض»: اگر کلید در .env باشد روشن است و مدل/آدرس
+    // هم از .env می‌آید (ai.js). مدیر سامانه با سوییچِ تنظیمات می‌تواند صریحاً خاموشش کند.
+    ai_enabled: '',
+    ai_base_url: '',
+    ai_model: '',
     ai_api_key: '',
     ai_temperature: '0.3',
   };
   const ins = db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(defaults)) ins.run(k, v);
+}
+
+// [دستیار] دیتابیس‌های قدیمی مقدارهای ثابتِ «خاموش / gpt-4o-mini / openai» را گرفته بودند و
+// پیش‌فرضِ .env هرگز اعمال نمی‌شد. یک‌بار، اگر کلیدی در تنظیمات ذخیره نشده، به «پیش‌فرض» برمی‌گردند.
+{
+  const get = (k) => db.prepare('SELECT value FROM app_settings WHERE key = ?').get(k)?.value;
+  if (!get('ai_env_defaults_v1')) {
+    if (!String(get('ai_api_key') || '').trim()) {
+      const set = db.prepare('UPDATE app_settings SET value = ? WHERE key = ? AND value = ?');
+      set.run('', 'ai_enabled', '0');
+      set.run('', 'ai_model', 'gpt-4o-mini');
+      set.run('', 'ai_base_url', 'https://api.openai.com/v1');
+    }
+    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ai_env_defaults_v1', '1')").run();
+  }
 }
 
 

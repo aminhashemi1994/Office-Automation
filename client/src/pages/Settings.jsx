@@ -323,8 +323,9 @@ function TaskPolicyCard() {
 function AiCard() {
   const { settings, refreshSettings, toast } = useStore();
   const [form, setForm] = useState({
-    ai_base_url: settings.ai_base_url || 'https://api.openai.com/v1',
-    ai_model: settings.ai_model || 'gpt-4o-mini',
+    // خالی = پیش‌فرضِ .env سرور؛ فقط برای جایگزین‌کردن پر می‌شود
+    ai_base_url: settings.ai_base_url || '',
+    ai_model: settings.ai_model || '',
     ai_api_key: '',
     ai_temperature: settings.ai_temperature || '0.3',
   });
@@ -389,10 +390,12 @@ function AiCard() {
       <div className="form-row">
         <Field label="آدرس سرویس (Base URL)" hint="مثلاً https://api.openai.com/v1">
           <input className="input" style={{ direction: 'ltr', textAlign: 'left' }} value={form.ai_base_url}
+            placeholder={envKey ? 'از .env سرور' : 'https://api.openai.com/v1'}
             onChange={e => setForm(f => ({ ...f, ai_base_url: e.target.value }))} />
         </Field>
         <Field label="نام مدل" hint="مثلاً gpt-4o-mini یا gpt-4o">
           <input className="input" style={{ direction: 'ltr', textAlign: 'left' }} value={form.ai_model}
+            placeholder={status?.model || 'gpt-4.1-mini'}
             onChange={e => setForm(f => ({ ...f, ai_model: e.target.value }))} />
         </Field>
         <Field label="کلید سرویس (API token)"

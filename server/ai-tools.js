@@ -1100,7 +1100,7 @@ Object.assign(READ_TOOLS, {
   },
 
   crm_list_deals: {
-    description: 'List sales deals (معاملات / فرصت‌های فروش), optionally by stage, customer or a search phrase.',
+    description: 'List sales deals (معاملات / فرصت‌های فروش), optionally by stage, customer or a search phrase. query matches the deal title, product AND customer name — use it to find a deal the user names by its title.',
     parameters: {
       type: 'object',
       properties: {
@@ -1294,7 +1294,7 @@ Object.assign(WRITE_TOOLS, {
   },
 
   crm_update_deal: {
-    description: 'Update a deal: move its stage (e.g. to won/lost), change amount/probability/close date, and record the stage report (what happened, next action). When marking lost, ask for the lost reason.',
+    description: 'Find deal_id first with crm_list_deals (query = words from the deal title OR customer name — users usually name a deal by its product/title, e.g. "کابل ۴×۱۶"). Update a deal: move its stage (e.g. to won/lost), change amount/probability/close date, and record the stage report (what happened, next action). When marking lost, ask for the lost reason.',
     parameters: {
       type: 'object',
       properties: {

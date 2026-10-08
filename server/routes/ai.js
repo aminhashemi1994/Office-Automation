@@ -223,6 +223,9 @@ r.post('/ask', wrap(async (req, res) => {
   }
   // فقط آخرین کارتِ هر نوع معتبر است (بقیه در همین دور جایگزین شده‌اند)
   const live = actionIds.filter(id => db.prepare("SELECT status FROM ai_actions WHERE id = ?").get(id)?.status === 'pending');
+  // مدل‌های کوچک گاهی جلوی مسیرِ داخلی دامنهٔ ساختگی می‌گذارند (https://example.com/crm)؛
+  // لینکِ Markdown با دامنه به مسیرِ نسبیِ همین سامانه برگردانده می‌شود
+  if (answer) answer = answer.replace(/\]\(https?:\/\/[^)\s/]+(\/[^)\s]*)?\)/g, (_, p) => `](${p || '/'})`);
   if (!answer) answer = live.length ? 'لطفاً جزئیات را در کارت زیر بررسی و تأیید کنید.' : 'متأسفم، نتوانستم پاسخ مناسبی آماده کنم. لطفاً سؤال را دقیق‌تر بپرسید.';
   const saved = saveMsg(chat.id, 'assistant', answer, { trace, actions: live });
   db.prepare("UPDATE ai_chats SET updated_at = datetime('now') WHERE id = ?").run(chat.id);
