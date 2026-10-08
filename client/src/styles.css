@@ -751,6 +751,85 @@ select.input option { background: var(--surface); color: var(--text); }
 }
 .support-history:hover { background: var(--border-soft); }
 .support-foot { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border-soft); align-items: flex-end; }
+.support-panel { transition: width .2s ease, height .2s ease; }
+.support-panel.wide { width: min(720px, calc(100vw - 32px)); height: min(820px, calc(100vh - 44px)); }
+.support-history.active { outline: 1px solid var(--primary); }
+.support-msg.bot.error { background: var(--red-soft); color: var(--red); }
+.support-msg.bot { white-space: normal; max-width: 92%; }
+.icon-btn.active { background: var(--primary-soft); color: var(--primary); }
+
+/* دستیار هوشمند — محتوای پیام */
+.ai-avatar {
+  width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0;
+  color: #fff; background: linear-gradient(135deg, var(--primary), #7c3aed);
+}
+.ai-welcome {
+  display: flex; gap: 10px; align-items: flex-start; padding: 12px; margin-bottom: 10px;
+  border-radius: 12px; background: var(--primary-soft); color: var(--text-2); font-size: 12.6px; line-height: 1.9;
+}
+.ai-welcome > svg { color: var(--primary); flex-shrink: 0; margin-top: 3px; }
+.ai-welcome b { display: block; color: var(--text-1); font-size: 13.3px; margin-bottom: 2px; }
+.ai-suggestions { display: grid; gap: 6px; grid-template-columns: 1fr; }
+.support-panel.wide .ai-suggestions { grid-template-columns: 1fr 1fr; }
+.support-suggestion { display: flex; gap: 7px; align-items: center; }
+
+.ai-bot-block { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.ai-md { display: flex; flex-direction: column; gap: 2px; }
+.ai-md ul, .ai-md ol { margin: 2px 0; padding-inline-start: 20px; }
+.ai-md li { margin: 1px 0; }
+.ai-md .ai-h { font-weight: 800; margin-top: 4px; }
+.ai-md .ai-gap { height: 6px; }
+.ai-link {
+  color: var(--primary); font-weight: 700; text-decoration: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 3px; border-bottom: 1px dashed currentColor;
+}
+.ai-code { font-family: ui-monospace, monospace; font-size: 12px; padding: 1px 5px; border-radius: 5px; background: var(--bg-3); direction: ltr; unicode-bidi: isolate; }
+
+.ai-trace { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 92%; }
+.ai-trace span {
+  font-size: 10.8px; padding: 2px 8px; border-radius: 999px;
+  background: var(--bg-3); color: var(--text-3);
+}
+.ai-trace span.bad { background: var(--amber-soft); color: var(--amber); }
+
+.ai-card {
+  width: 100%; border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+  background: var(--bg-1); box-shadow: 0 2px 10px rgba(0, 0, 0, .06);
+  border-inline-start: 3px solid var(--primary);
+}
+.ai-card.danger { border-inline-start-color: var(--red); }
+.ai-card.decided { opacity: .72; border-inline-start-color: var(--border); }
+.ai-card-head {
+  display: flex; align-items: center; gap: 7px; padding: 9px 12px; font-size: 13px;
+  background: var(--bg-2); border-bottom: 1px solid var(--border-soft);
+}
+.ai-card-head > svg { color: var(--primary); }
+.ai-card-body { padding: 8px 12px; display: grid; gap: 5px; }
+.ai-kv { display: grid; grid-template-columns: minmax(90px, 34%) 1fr; gap: 8px; font-size: 12.5px; line-height: 1.8; }
+.ai-kv > span { color: var(--text-3); }
+.ai-kv > div { color: var(--text-1); white-space: pre-wrap; word-break: break-word; font-weight: 600; }
+.ai-card-note { font-size: 11.8px; color: var(--amber); background: var(--amber-soft); padding: 5px 8px; border-radius: 8px; }
+.ai-card-foot { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 9px 12px; border-top: 1px solid var(--border-soft); }
+.ai-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 700; }
+.ai-badge.ok { background: var(--green-soft); color: var(--green); }
+.ai-badge.bad { background: var(--red-soft); color: var(--red); }
+.ai-badge.muted { background: var(--bg-3); color: var(--text-3); }
+
+.ai-result {
+  align-self: stretch; display: flex; align-items: center; gap: 8px; padding: 8px 11px;
+  border-radius: 11px; font-size: 12.6px; line-height: 1.8;
+}
+.ai-result.ok { background: var(--green-soft); color: var(--green); }
+.ai-result.bad { background: var(--bg-2); color: var(--text-2); }
+.ai-result > svg { flex-shrink: 0; }
+.ai-disclaimer { padding: 0 14px 10px; color: var(--text-3); font-size: 10.8px; line-height: 1.7; }
+
+@media (max-width: 720px) {
+  .support-panel, .support-panel.wide { inset: 0; width: 100vw; height: 100dvh; border-radius: 0; }
+  .ai-hide-mobile { display: none !important; }
+  .support-fab span { display: none; }
+  .support-fab { padding: 13px; }
+}
 
 /* ---------- نمودار درختی گردش کار ---------- */
 .wf-tree { display: flex; flex-direction: column; gap: 14px; }

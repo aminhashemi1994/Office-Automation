@@ -12,6 +12,7 @@ import { fmtRelative, fmtDateTime } from './utils.js';
 import { Toasts, Avatar } from './components/common.jsx';
 import { CallOverlay, IncomingCallBanner } from './components/CallOverlay.jsx';
 import GlobalSearch from './components/GlobalSearch.jsx';
+import SupportChat from './components/SupportChat.jsx';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Chat from './pages/Chat.jsx';
@@ -463,6 +464,7 @@ function Layout({ children }) {
         </header>
         {children}
       </div>
+      <SupportChat />
     </div>
   );
 }

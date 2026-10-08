@@ -89,18 +89,39 @@ function esc(s) {
 }
 
 // ساخت سند قابل چاپ برای یک درخواست — با سربرگ سازمان، لوگو و امضای تاییدکنندگان
-export function printRequest(req, statusLabel = '', settings = {}) {
+// تصویرِ امضا با هدرِ احراز هویت گرفته و به data URL تبدیل می‌شود تا داخلِ سند بنشیند.
+// پنجرهٔ چاپ about:blank است و آدرسِ نسبی و بارگذاریِ دیرهنگامِ تصویر در آن قابل اتکا نیست —
+// نتیجه‌اش این بود که در سندِ چاپی/بایگانی فقط نامِ امضاکننده می‌آمد.
+async function signatureDataUrl(url) {
+  try {
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${getToken()}` } });
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    return await new Promise((res) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.onerror = () => res(null);
+      fr.readAsDataURL(blob);
+    });
+  } catch { return null; }
+}
+
+export async function printRequest(req, statusLabel = '', settings = {}) {
+  // پنجره همین حالا (درون کلیکِ کاربر) باز می‌شود تا مسدودکنندهٔ پنجره جلویش را نگیرد
+  const w = window.open('', '_blank');
+  if (!w) return;
+  w.document.write('<!doctype html><html dir="rtl"><body style="font-family:Tahoma;padding:30px">در حال آماده‌سازی سند…</body></html>');
+
   let schema = [], data = {};
   try { schema = JSON.parse(req.form_schema || '[]'); } catch {}
   try { data = JSON.parse(req.form_data || '{}'); } catch {}
 
-  const token = getToken();
   const companyName = settings.company_name || 'سامانه اتوماسیون اداری';
   const companySub = settings.company_subtitle || '';
   const address = settings.letterhead_address || '';
   const footer = settings.letterhead_footer || '';
   const logo = settings.logo_path
-    ? `<img class="logo" src="/branding/${encodeURIComponent(settings.logo_path)}" alt="لوگو" />` : '';
+    ? `<img class="logo" src="${location.origin}/branding/${encodeURIComponent(settings.logo_path)}" alt="لوگو" />` : '';
 
   // نامِ فایل‌های پیوست (سرور همراه جزئیات درخواست می‌فرستد) تا در سند چاپی نام واقعی بیاید
   const fileNames = new Map((req.files || []).map(f => [Number(f.id), f.original_name || '']));
@@ -122,10 +143,14 @@ export function printRequest(req, statusLabel = '', settings = {}) {
   // امضا فقط برای اقدام‌های «تایید» و فقط برای مراحلی که در فرم «درج امضا» فعال بوده،
   // از endpoint امن و مقیّد به همان اقدام گرفته می‌شود (نه یک تصویر مستقل).
   const approvals = (req.actions || []).filter(a => a.action === 'approve' && a.step_requires_signature !== 0);
-  const signBlocks = approvals.map(a => {
-    const sig = a.has_signature
-      ? `<img class="sig-img" src="/api/workflows/requests/${req.id}/signature/${a.id}?token=${encodeURIComponent(token)}" alt="امضا" />`
-      : `<div class="sig-empty">—</div>`;
+  const [requesterSig, ...approvalSigs] = await Promise.all([
+    req.requester_signature !== 0 && req.requester_has_signature
+      ? signatureDataUrl(`/api/workflows/requests/${req.id}/requester-signature`) : null,
+    ...approvals.map(a => a.has_signature ? signatureDataUrl(`/api/workflows/requests/${req.id}/signature/${a.id}`) : null),
+  ]);
+  const sigImg = (src) => src ? `<img class="sig-img" src="${src}" alt="امضا" />` : `<div class="sig-empty">—</div>`;
+  const signBlocks = approvals.map((a, i) => {
+    const sig = sigImg(approvalSigs[i]);
     return `<div class="sign-box">
       ${sig}
       <div class="sign-name">${esc(a.actor_name)}</div>
@@ -135,7 +160,7 @@ export function printRequest(req, statusLabel = '', settings = {}) {
   }).join('');
   // امضای درخواست‌دهنده — فقط اگر در فرم فعال باشد
   const requesterBox = req.requester_signature === 0 ? '' : `<div class="sign-box">
-    <div class="sig-empty">&nbsp;</div>
+    ${requesterSig ? sigImg(requesterSig) : '<div class="sig-empty">&nbsp;</div>'}
     <div class="sign-name">${esc(req.requester_name)}</div>
     <div class="sign-role">درخواست‌دهنده${req.requester_department ? ' · ' + esc(req.requester_department) : ''}</div>
     <div class="sign-date">${esc(fmtDateTime(req.created_at))}</div>
@@ -224,13 +249,16 @@ export function printRequest(req, statusLabel = '', settings = {}) {
 </div>
 </body></html>`;
 
-  const w = window.open('', '_blank');
-  if (!w) return;
+  if (w.closed) return;
+  w.document.open();
   w.document.write(html);
   w.document.close();
   w.focus();
-  // کمی صبر تا تصاویر امضا و لوگو بارگذاری شوند
-  setTimeout(() => w.print(), 700);
+  // امضاها داخلِ سند‌اند؛ فقط برای لوگو صبر می‌کنیم (حداکثر ۲ ثانیه)
+  const pending = [...w.document.images].filter(img => !img.complete)
+    .map(img => new Promise(res => { img.onload = img.onerror = res; }));
+  await Promise.race([Promise.all(pending), new Promise(res => setTimeout(res, 2000))]);
+  w.print();
 }
 
 const STATUS_FA = {

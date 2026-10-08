@@ -535,6 +535,7 @@ function requestDetail(id, userId) {
   const req_ = db.prepare(`
     SELECT r.*, t.name AS template_name, t.form_schema, t.requester_signature,
            t.notify_requester_on_final, t.requester_final_approval, u.full_name AS requester_name,
+           (u.signature_path IS NOT NULL AND u.signature_path != '') AS requester_has_signature,
            d.name AS requester_department
     FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
@@ -1451,6 +1452,22 @@ r.get('/requests/:id/signature/:actionId', (req, res) => {
   // امضا فقط برای اقدامِ «تایید» معنا دارد (نه رد/عبور/یادداشت)
   if (!action || action.action !== 'approve') return res.status(404).json({ error: 'امضا برای این اقدام وجود ندارد' });
   const u = db.prepare('SELECT signature_path FROM users WHERE id = ?').get(action.actor_id);
+  if (!u?.signature_path) return res.status(404).json({ error: 'امضایی ثبت نشده است' });
+  const p = path.join(SIGNATURES_DIR, u.signature_path);
+  if (!fs.existsSync(p)) return res.status(404).json({ error: 'فایل امضا یافت نشد' });
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.sendFile(p);
+});
+
+// امضای درخواست‌دهنده برای سند چاپی — با همان قیدها: فقط برای کسی که درخواست را می‌بیند
+// و فقط اگر «درج امضای درخواست‌دهنده» در تعریف فرآیند خاموش نشده باشد.
+r.get('/requests/:id/requester-signature', (req, res) => {
+  const rq = db.prepare(`SELECT r.*, t.requester_signature FROM workflow_requests r
+    JOIN workflow_templates t ON t.id = r.template_id WHERE r.id = ?`).get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
+  if (!canViewRequest(req.user, rq)) return res.status(403).json({ error: 'دسترسی غیرمجاز' });
+  if (rq.requester_signature === 0) return res.status(404).json({ error: 'امضای درخواست‌دهنده در این فرآیند درج نمی‌شود' });
+  const u = db.prepare('SELECT signature_path FROM users WHERE id = ?').get(rq.requester_id);
   if (!u?.signature_path) return res.status(404).json({ error: 'امضایی ثبت نشده است' });
   const p = path.join(SIGNATURES_DIR, u.signature_path);
   if (!fs.existsSync(p)) return res.status(404).json({ error: 'فایل امضا یافت نشد' });

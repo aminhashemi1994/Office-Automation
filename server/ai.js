@@ -14,13 +14,25 @@ function get(key, fallback = '') {
   return db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key)?.value ?? fallback;
 }
 
+// مقادیرِ «تنظیمات سازمان» اولویت دارند؛ اگر خالی باشند از .env خوانده می‌شوند
+// (llm_Token / AI_API_KEY، AI_BASE_URL، AI_MODEL) تا بدون پیکربندیِ دستی هم کار کند.
+const ENV_KEY = () => String(process.env.AI_API_KEY || process.env.llm_Token || process.env.LLM_TOKEN || '').trim();
+const ENV_BASE = () => String(process.env.AI_BASE_URL || 'https://api.gapgpt.app/v1').trim();
+const ENV_MODEL = () => String(process.env.AI_MODEL || 'gpt-4.1-mini').trim();
+
 export function aiConfig() {
-  const base = String(get('ai_base_url', '')).trim().replace(/\/+$/, '');
+  const dbKey = String(get('ai_api_key', '')).trim();
+  const envKey = ENV_KEY();
+  // کلیدِ .env همیشه با آدرسِ .env جفت می‌شود (آدرسِ ذخیره‌شده مالِ کلیدِ تنظیمات است)
+  const base = (dbKey ? String(get('ai_base_url', '')).trim() : envKey ? ENV_BASE() : '').replace(/\/+$/, '');
+  // وقتی کلید از .env آمده و مدیر هنوز سوییچ را دست نزده، دستیار روشن است
+  const enabledSetting = get('ai_enabled', '');
   return {
-    enabled: get('ai_enabled', '0') === '1',
+    enabled: enabledSetting === '1' || (enabledSetting === '' && !!envKey),
     baseUrl: base,
-    apiKey: String(get('ai_api_key', '')).trim(),
-    model: String(get('ai_model', '')).trim() || 'gpt-4o-mini',
+    apiKey: dbKey || envKey,
+    keySource: dbKey ? 'settings' : envKey ? 'env' : null,
+    model: String(get('ai_model', '')).trim() || ENV_MODEL(),
     temperature: Number(get('ai_temperature', '0.3')) || 0,
   };
 }
@@ -31,12 +43,9 @@ export function aiReady() {
   return c.enabled && !!c.baseUrl && !!c.apiKey;
 }
 
-/**
- * یک پرسش را به مدل می‌فرستد و متنِ پاسخ را برمی‌گرداند.
- * messages: [{ role: 'system'|'user'|'assistant', content }]
- * خطاها با پیام فارسیِ قابل‌فهم بالا می‌روند تا در رابط کاربری نمایش داده شوند.
- */
-export async function askModel(messages, { maxTokens = 900, model, temperature } = {}) {
+// درخواستِ خام به ‎/chat/completions‎ — پیامِ کاملِ مدل (متن یا tool_calls) را برمی‌گرداند.
+// خطاها با پیام فارسیِ قابل‌فهم بالا می‌روند تا در رابط کاربری نمایش داده شوند.
+async function complete(body, { model } = {}) {
   const c = aiConfig();
   if (!c.baseUrl) throw new Error('آدرس سرویس هوش مصنوعی تنظیم نشده است');
   if (!c.apiKey) throw new Error('کلید (API token) سرویس هوش مصنوعی تنظیم نشده است');
@@ -48,12 +57,7 @@ export async function askModel(messages, { maxTokens = 900, model, temperature }
     resp = await fetch(`${c.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.apiKey}` },
-      body: JSON.stringify({
-        model: model || c.model,
-        messages,
-        temperature: temperature ?? c.temperature,
-        max_tokens: maxTokens,
-      }),
+      body: JSON.stringify({ model: model || c.model, temperature: c.temperature, ...body }),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -73,7 +77,27 @@ export async function askModel(messages, { maxTokens = 900, model, temperature }
     throw new Error(`خطای سرویس هوش مصنوعی (${resp.status})${detail ? ': ' + detail : ''}`);
   }
   const data = await resp.json().catch(() => null);
-  const content = data?.choices?.[0]?.message?.content;
-  if (!content) throw new Error('پاسخ سرویس هوش مصنوعی خالی بود');
-  return String(content).trim();
+  const message = data?.choices?.[0]?.message;
+  if (!message) throw new Error('پاسخ سرویس هوش مصنوعی خالی بود');
+  return message;
+}
+
+/**
+ * یک پرسش را به مدل می‌فرستد و متنِ پاسخ را برمی‌گرداند.
+ * messages: [{ role: 'system'|'user'|'assistant', content }]
+ */
+export async function askModel(messages, { maxTokens = 900, model, temperature } = {}) {
+  const msg = await complete({
+    messages, max_tokens: maxTokens, ...(temperature !== undefined ? { temperature } : {}),
+  }, { model });
+  if (!msg.content) throw new Error('پاسخ سرویس هوش مصنوعی خالی بود');
+  return String(msg.content).trim();
+}
+
+/**
+ * یک دورِ گفتگو با ابزارها (function calling). پیامِ مدل را همان‌طور که هست برمی‌گرداند:
+ * { content, tool_calls? } — حلقهٔ اجرای ابزارها در routes/ai.js است.
+ */
+export async function chatWithTools(messages, tools, { maxTokens = 1500 } = {}) {
+  return complete({ messages, tools, tool_choice: 'auto', max_tokens: maxTokens });
 }

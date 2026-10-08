@@ -1052,7 +1052,25 @@ CREATE TABLE IF NOT EXISTS ai_messages (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ai_msgs ON ai_messages(chat_id, id);
+
+-- اقدام‌هایی که دستیار آماده کرده و تا کاربر «تأیید» نزند اجرا نمی‌شوند
+CREATE TABLE IF NOT EXISTS ai_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id INTEGER NOT NULL REFERENCES ai_chats(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tool TEXT NOT NULL,
+  payload TEXT NOT NULL,             -- JSON: درخواستِ آماده برای API
+  summary TEXT NOT NULL,             -- JSON: {title, lines:[[label,value]]}
+  status TEXT DEFAULT 'pending',     -- pending | done | failed | cancelled | superseded
+  result TEXT,                       -- JSON: نتیجهٔ اجرا یا خطا
+  created_at TEXT DEFAULT (datetime('now')),
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_actions_chat ON ai_actions(chat_id, status);
 `);
+
+// [دستیار] رونوشتِ کاملِ فراخوانی ابزارها برای ادامهٔ گفتگو در دورهای بعد
+try { db.exec('ALTER TABLE ai_messages ADD COLUMN meta TEXT'); } catch {}
 
 // [وظایف] دسته‌بندی، یادآوری، پیوست و زمان ویرایش
 try { db.exec('ALTER TABLE tasks ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL'); } catch {}
