@@ -16,12 +16,12 @@ import { useStore } from '../store.jsx';
 import { fmtDateTime } from '../utils.js';
 
 const SUGGESTIONS = [
-  { icon: '📥', text: 'چه کارهایی در کارتابلم منتظر من است؟' },
-  { icon: '📝', text: 'می‌خواهم یک درخواست جدید در کارتابل ثبت کنم' },
-  { icon: '✅', text: 'برای فردا ساعت ۱۰ یک وظیفه بساز' },
-  { icon: '⚙️', text: 'یک فرآیند جدید تعریف کن' },
-  { icon: '🏖️', text: 'چقدر مرخصی برایم مانده؟' },
-  { icon: '❓', text: 'یادداشتم را چطور با همکارم به اشتراک بگذارم؟' },
+  { icon: '📥', label: 'کارتابلم', text: 'چه کارهایی در کارتابلم منتظر من است؟' },
+  { icon: '📝', label: 'ثبت درخواست جدید', text: 'می‌خواهم یک درخواست جدید در کارتابل ثبت کنم' },
+  { icon: '✅', label: 'ساخت وظیفه', text: 'برای فردا ساعت ۱۰ یک وظیفه بساز' },
+  { icon: '🏖️', label: 'ماندهٔ مرخصی', text: 'چقدر مرخصی برایم مانده؟' },
+  { icon: '⚙️', label: 'تعریف فرآیند', text: 'یک فرآیند جدید تعریف کن' },
+  { icon: '❓', label: 'اشتراک یادداشت', text: 'یادداشتم را چطور با همکارم به اشتراک بگذارم؟' },
 ];
 
 const THINKING = ['در حال بررسی…', 'در حال خواندن اطلاعات سامانه…', 'در حال آماده‌کردن پاسخ…'];
@@ -127,7 +127,7 @@ function ActionCard({ action, onDecide, busy }) {
           <button className="btn btn-sm" disabled={busy} onClick={() => onDecide(action, 'cancel')}>
             <Ban size={14} /> لغو
           </button>
-          <small style={{ color: 'var(--text-3)', marginInlineStart: 'auto' }}>بدون تأیید شما چیزی ثبت نمی‌شود</small>
+          <small>بدون تأیید شما چیزی ثبت نمی‌شود</small>
         </div>
       )}
     </div>
@@ -230,7 +230,7 @@ export default function SupportChat() {
         <div key={c.id} className={`support-history ${c.id === chatId ? 'active' : ''}`} onClick={() => openChat(c.id)}>
           <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title || 'بدون عنوان'}</span>
           <small style={{ color: 'var(--text-3)' }}>{fmtDateTime(c.updated_at)}</small>
-          <button className="icon-btn" style={{ color: 'var(--red)' }} title="حذف" onClick={e => removeChat(c.id, e)}><Trash2 size={13} /></button>
+          <button className="ai-icon-del" title="حذف گفتگو" aria-label="حذف گفتگو" onClick={e => removeChat(c.id, e)}><Trash2 size={14} /></button>
         </div>
       ))}
     </div>
@@ -239,7 +239,7 @@ export default function SupportChat() {
   return (
     <>
       {!open && (
-        <button className="support-fab" onClick={() => setOpen(true)} title="دستیار هوشمند">
+        <button className={`support-fab ${location.pathname.startsWith('/chat') ? 'raised' : ''}`} onClick={() => setOpen(true)} title="دستیار هوشمند">
           <Sparkles size={18} /> <span>دستیار</span>
         </button>
       )}
@@ -247,47 +247,45 @@ export default function SupportChat() {
       {open && (
         <div className={`support-panel ${wide ? 'wide' : ''}`} role="dialog" aria-label="دستیار هوشمند">
           <div className="support-head">
-            <div className="ai-avatar"><Bot size={17} /></div>
+            <div className="ai-avatar"><Bot size={19} /></div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <b style={{ display: 'block', fontSize: 13.5 }}>دستیار هوشمند</b>
-              <small style={{ color: 'var(--text-3)', fontSize: 11 }}>راهنمایی + انجامِ کار با تأیید شما</small>
+              <b style={{ display: 'block', fontSize: 14 }}>دستیار هوشمند</b>
+              <small style={{ fontSize: 11 }}>راهنمایی و انجامِ کار با تأیید شما</small>
             </div>
-            <button className={`icon-btn ${showHistory ? 'active' : ''}`} title="گفتگوهای پیشین" onClick={() => setShowHistory(s => !s)}><History size={17} /></button>
-            <button className="icon-btn" title="گفتگوی تازه" onClick={newChat}><Plus size={17} /></button>
-            <button className="icon-btn ai-hide-mobile" title={wide ? 'کوچک‌کردن' : 'بزرگ‌کردن'} onClick={toggleWide}>
+            <button className={`ai-head-btn ${showHistory ? 'active' : ''}`} title="گفتگوهای پیشین" aria-label="گفتگوهای پیشین" onClick={() => setShowHistory(s => !s)}><History size={17} /></button>
+            <button className="ai-head-btn" title="گفتگوی تازه" aria-label="گفتگوی تازه" onClick={newChat}><Plus size={18} /></button>
+            <button className="ai-head-btn ai-hide-mobile" title={wide ? 'کوچک‌کردن' : 'بزرگ‌کردن'} aria-label={wide ? 'کوچک‌کردن' : 'بزرگ‌کردن'} onClick={toggleWide}>
               {wide ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
-            <button className="icon-btn" title="بستن (Esc)" onClick={() => setOpen(false)}><X size={18} /></button>
+            <button className="ai-head-btn" title="بستن (Esc)" aria-label="بستن" onClick={() => setOpen(false)}><X size={19} /></button>
           </div>
 
           <div className="support-body">
             {showHistory ? (
-              <div style={{ padding: '4px 2px' }}>
-                <small style={{ color: 'var(--text-3)', display: 'block', marginBottom: 8 }}>گفتگوهای پیشین</small>
+              <div>
+                <div className="ai-section-title" style={{ marginTop: 0 }}>گفتگوهای پیشین</div>
                 {historyList()}
               </div>
             ) : messages.length === 0 ? (
-              <div style={{ padding: '6px 2px' }}>
+              <div>
                 <div className="ai-welcome">
-                  <Sparkles size={18} />
-                  <div>
-                    <b>سلام! چه کمکی از من برمی‌آید؟</b>
-                    <div>می‌توانم دربارهٔ کار با سامانه راهنمایی کنم یا خودم کار را انجام دهم — مثلاً درخواست ثبت کنم،
-                      کارتابل را بررسی کنم، فرآیند تعریف کنم یا وظیفه بسازم. هر کاری قبل از انجام، برای تأیید به شما نشان داده می‌شود.</div>
-                  </div>
+                  <div className="ai-welcome-icon"><Sparkles size={26} /></div>
+                  <b>سلام! چه کمکی از من برمی‌آید؟</b>
+                  <p>راهنمایی می‌کنم یا خودم کار را انجام می‌دهم؛ هر کاری پیش از انجام برای تأیید به شما نشان داده می‌شود.</p>
                 </div>
+                <div className="ai-section-title">پیشنهادها</div>
                 <div className="ai-suggestions">
                   {SUGGESTIONS.map(s => (
                     <button key={s.text} className="support-suggestion" onClick={() => ask(s.text)}>
-                      <span>{s.icon}</span> {s.text}
+                      <span>{s.icon}</span>{s.label}
                     </button>
                   ))}
                 </div>
                 {history.length > 0 && (
-                  <div style={{ marginTop: 14 }}>
-                    <small style={{ color: 'var(--text-3)' }}>گفتگوهای اخیر</small>
-                    <div style={{ marginTop: 6 }}>{historyList(4)}</div>
-                  </div>
+                  <>
+                    <div className="ai-section-title">گفتگوهای اخیر</div>
+                    {historyList(4)}
+                  </>
                 )}
               </div>
             ) : null}
@@ -320,7 +318,7 @@ export default function SupportChat() {
               )
             ))}
             {busy && !showHistory && (
-              <div className="support-msg bot" style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--text-3)' }}>
+              <div className="support-msg bot ai-typing">
                 <Loader2 size={15} className="spin" /> {THINKING[thinking]}
               </div>
             )}
@@ -328,11 +326,11 @@ export default function SupportChat() {
           </div>
 
           <div className="support-foot">
-            <textarea ref={inputRef} className="input" rows={1} style={{ flex: 1, minHeight: 40, maxHeight: 120, resize: 'none' }}
+            <textarea ref={inputRef} className="input" rows={1} style={{ flex: 1 }}
               placeholder="بپرسید یا بگویید چه کاری انجام شود…"
               value={text} onChange={e => setText(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); } }} />
-            <button className="btn btn-primary" disabled={busy || !text.trim()} onClick={() => ask()} title="ارسال"><Send size={15} /></button>
+            <button className="ai-send" disabled={busy || !text.trim()} onClick={() => ask()} title="ارسال" aria-label="ارسال"><Send size={17} style={{ transform: 'scaleX(-1)' }} /></button>
           </div>
           <small className="ai-disclaimer">
             پاسخ‌ها با هوش مصنوعی تولید می‌شوند و ممکن است خطا داشته باشند؛ کارت‌ها را پیش از تأیید با دقت بخوانید.
