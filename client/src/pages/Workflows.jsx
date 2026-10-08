@@ -280,6 +280,11 @@ function TemplateModal({ tpl, onClose, onDone }) {
   const [ownerId, setOwnerId] = useState(tpl ? (tpl.owner_user_id ?? null) : user?.id ?? null);
   const [ownerNotify, setOwnerNotify] = useState(tpl?.owner_notify || 'each');
   const setD = (k, v) => setDaily(x => ({ ...x, [k]: v }));
+  // [ماژول‌های کارتابل] گزینه‌های سریعِ این فرم برای گیرندگانِ یادآوری روزانه (مثل «رخ داد / رخ نداد»)
+  const [quickOpts, setQuickOpts] = useState(() => {
+    try { const v = JSON.parse(tpl?.quick_options || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+  });
+  const setQO = (i, patch) => setQuickOpts(l => l.map((o, j) => j === i ? { ...o, ...patch } : o));
   const [notifyFinal, setNotifyFinal] = useState(tpl ? tpl.notify_requester_on_final !== 0 : true);
   const [requesterSig, setRequesterSig] = useState(tpl ? tpl.requester_signature !== 0 : true);
   // [تایید نهایی درخواست‌دهنده] پس از آخرین مرحله، درخواست برای تصمیم نهایی به خودِ او برمی‌گردد
@@ -353,6 +358,7 @@ function TemplateModal({ tpl, onClose, onDone }) {
         name, description, title_placeholder: titlePlaceholder, form_schema: fields, steps,
         notify_requester_on_final: notifyFinal, requester_signature: requesterSig,
         daily_reminder: daily,
+        quick_options: quickOpts.filter(o => o.label?.trim()),
         owner_user_id: ownerId || null, owner_notify: ownerNotify,
         requester_final_approval: requesterFinal,
         past_days_limit: Number(pastDays) || 0,
@@ -892,6 +898,40 @@ function TemplateModal({ tpl, onClose, onDone }) {
             )}
           </div>
         )}
+      </div>
+
+      {/* [ماژول‌های کارتابل] دکمه‌های سریع برای پاسخِ روزانه */}
+      <div className="card-pad panel-soft" style={{ marginTop: 6, marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <b style={{ flex: 1 }}>ماژول‌های کارتابل (پاسخ سریع روزانه)</b>
+          {!quickOpts.length && (
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setQuickOpts([
+              { key: 'occurred', label: 'رخ داد', kind: 'report' },
+              { key: 'not_occurred', label: 'رخ نداد', kind: 'confirm' },
+            ])}>الگوی «رخ داد / رخ نداد»</button>
+          )}
+          <button type="button" className="btn btn-sm btn-ghost"
+            onClick={() => setQuickOpts(l => [...l, { key: `opt${Date.now() % 100000}`, label: '', kind: 'confirm' }])}>
+            <Plus size={14} /> گزینه
+          </button>
+        </div>
+        <div style={{ fontSize: 11.8, color: 'var(--text-3)', marginTop: 4 }}>
+          گیرندگانِ «یادآوری روزانه» هر روز این دکمه‌ها را در کارتابلشان می‌بینند و با امضا و توضیح پاسخ می‌دهند.
+          گزینهٔ «هشدار» (مثل رخ داد) در اعلان و گزارشِ مسئول پیگیری برجسته نشان داده می‌شود.
+        </div>
+        {quickOpts.length > 0 && !daily.enabled && (
+          <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 6 }}>برای نمایش در کارتابل، «یادآوری روزانه» را روشن کنید.</div>
+        )}
+        {quickOpts.map((o, i) => (
+          <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+            <input className="input" style={{ width: 180 }} placeholder="عنوان دکمه" value={o.label}
+              onChange={e => setQO(i, { label: e.target.value })} />
+            <Segmented size="sm" value={o.kind} onChange={v => setQO(i, { kind: v })}
+              options={[{ value: 'confirm', label: 'عادی', tone: 'success' }, { value: 'report', label: 'هشدار', tone: 'primary' }]} />
+            <button type="button" className="icon-btn" style={{ color: 'var(--red)' }} title="حذف"
+              onClick={() => setQuickOpts(l => l.filter((_, j) => j !== i))}><Trash2 size={14} /></button>
+          </div>
+        ))}
       </div>
 
       {/* [مورد ۷] ساخت تسک پس از تایید نهایی */}

@@ -162,7 +162,7 @@ function Editor({ item, onClose, onSaved }) {
   );
 }
 
-function Viewer({ id, onClose, onChanged }) {
+function Viewer({ id, onClose, onChanged, onEdit, onDelete }) {
   const { toast } = useStore();
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -194,6 +194,10 @@ function Viewer({ id, onClose, onChanged }) {
       footer={<>
         <button className="btn btn-ghost" onClick={onClose}>بستن</button>
         {data.can_manage && <button className="btn btn-ghost" onClick={renotify}><Bell size={15} /> یادآوری به ندیده‌ها</button>}
+        {data.can_manage && <button className="btn btn-ghost" onClick={() => onEdit(a)}><Pencil size={15} /> ویرایش</button>}
+        {data.can_manage && (
+          <button className="btn btn-ghost" style={{ color: 'var(--red)' }} onClick={() => onDelete(a)}><Trash2 size={15} /> حذف</button>
+        )}
         {!!a.require_ack && !data.my_acked_at && (
           <button className="btn btn-primary" disabled={busy} onClick={ack}><Check size={16} /> دریافت شد</button>
         )}
@@ -240,6 +244,21 @@ function Viewer({ id, onClose, onChanged }) {
               </div>
             ))}
           </div>
+          {data.not_seen?.length > 0 && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 8px' }}>
+                <b style={{ fontSize: 13 }}>هنوز ندیده‌اند</b>
+                <span className="badge badge-amber">{fa(data.not_seen.length)} نفر</span>
+              </div>
+              <div style={{ maxHeight: 180, overflowY: 'auto', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {data.not_seen.map(r => (
+                  <span key={r.user_id} className="badge badge-gray">
+                    {r.full_name}{r.department_name ? ` · ${r.department_name}` : ''}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
     </Modal>
@@ -266,9 +285,9 @@ export default function Announcements() {
   }, [params]);
 
   const remove = async (a) => {
-    if (!window.confirm(`اطلاعیهٔ «${a.title}» حذف شود؟`)) return;
-    try { await api(`/announcements/${a.id}`, { method: 'DELETE' }); load(); toast('حذف شد'); }
-    catch (e) { toast(e.message, 'error'); }
+    if (!window.confirm(`اطلاعیهٔ «${a.title}» حذف شود؟`)) return false;
+    try { await api(`/announcements/${a.id}`, { method: 'DELETE' }); load(); toast('حذف شد'); return true; }
+    catch (e) { toast(e.message, 'error'); return false; }
   };
   const togglePin = async (a) => {
     try { await api(`/announcements/${a.id}`, { method: 'PUT', body: { pinned: a.pinned ? 0 : 1 } }); load(); }
@@ -288,7 +307,7 @@ export default function Announcements() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {data.can_publish && (
+          {(data.can_publish || data.has_own) && (
             <div className="tabs" style={{ margin: 0 }}>
               <button className={`tab ${tab === 'inbox' ? 'active' : ''}`} onClick={() => setTab('inbox')}>
                 برای من {data.unread > 0 && <span className="badge-count">{fa(data.unread)}</span>}
@@ -338,7 +357,7 @@ export default function Announcements() {
                     {a.publish_at && <span className="badge badge-gray">زمان‌بندی‌شده برای {fmtDateTime(a.publish_at)}</span>}
                   </div>
                 </div>
-                {tab === 'mine' && (
+                {a.can_edit && (
                   <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
                     <span className="badge badge-gray" title="دیده‌شده / مخاطب">
                       <Eye size={11} /> {fa(a.read_count)}{a.audience_count !== undefined ? `/${fa(a.audience_count)}` : ''}
@@ -361,7 +380,11 @@ export default function Announcements() {
         <Editor item={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)} onSaved={load} />
       )}
-      {viewing && <Viewer id={viewing} onClose={() => setViewing(null)} onChanged={load} />}
+      {viewing && (
+        <Viewer id={viewing} onClose={() => setViewing(null)} onChanged={load}
+          onEdit={(a) => { setViewing(null); setEditing(a); }}
+          onDelete={async (a) => { if (await remove(a)) setViewing(null); }} />
+      )}
     </div>
   );
 }

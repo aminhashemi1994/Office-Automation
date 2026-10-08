@@ -875,6 +875,58 @@ function saveOwner(templateId, body, fallbackUserId) {
   db.prepare('UPDATE workflow_templates SET owner_user_id = ?, owner_notify = ? WHERE id = ?').run(owner, mode, templateId);
 }
 
+// [ماژول‌های کارتابل] گزینه‌های سریعِ فرم (مثل «رخ داد / رخ نداد»)
+function saveQuickOptions(templateId, v) {
+  if (v === undefined) return;
+  const list = (Array.isArray(v) ? v : []).map((o, i) => ({
+    key: String(o?.key || `opt${i + 1}`).replace(/[^\w-]/g, '').slice(0, 30) || `opt${i + 1}`,
+    label: String(o?.label || '').trim().slice(0, 60),
+    kind: o?.kind === 'report' ? 'report' : 'confirm',
+  })).filter(o => o.label).slice(0, 6);
+  // کلیدها یکتا باشند
+  const seen = new Set();
+  for (const o of list) { while (seen.has(o.key)) o.key += '_'; seen.add(o.key); }
+  db.prepare('UPDATE workflow_templates SET quick_options = ? WHERE id = ?')
+    .run(list.length ? JSON.stringify(list) : '', templateId);
+}
+
+function quickOptionsOf(t) {
+  try { const v = JSON.parse(t.quick_options || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+
+// تاریخ/ساعت/روزِ هفته به وقت تهران
+export function tehranNow() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short',
+  }).formatToParts(new Date()).map(p => [p.type, p.value]));
+  const wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday);
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}`, weekday: wd };
+}
+
+// [یادآوری روزانه] گیرندگانِ یادآوری (همان کسانی که باید هر روز پاسخ بدهند)
+export function dailyRecipients(cfg) {
+  const ids = new Set((cfg.user_ids || []).map(Number));
+  // تنظیماتِ قدیمی (بدون این پرچم‌ها) یعنی «همهٔ اعضای واحد»
+  const legacy = cfg.to_members === undefined && cfg.to_directors === undefined && cfg.to_heads === undefined;
+  const toMembers = legacy || !!cfg.to_members;
+  if (toMembers && cfg.dept_ids?.length) {
+    const ph = cfg.dept_ids.map(() => '?').join(',');
+    for (const u of db.prepare(`SELECT id FROM users WHERE is_active = 1 AND department_id IN (${ph})`).all(...cfg.dept_ids)) ids.add(u.id);
+  }
+  // مدیرانِ واحد و سرپرست‌ها (جانشینِ مدیر) — واحدهای انتخاب‌شده، یا همهٔ واحدها اگر واحدی انتخاب نشده
+  if (cfg.to_directors || cfg.to_heads) {
+    const units = cfg.dept_ids?.length ? cfg.dept_ids
+      : db.prepare('SELECT id FROM departments').all().map(d => d.id);
+    const active = db.prepare('SELECT 1 FROM users WHERE id = ? AND is_active = 1');
+    for (const d of units) {
+      const people = [...(cfg.to_directors ? deptDirectors(d) : []), ...(cfg.to_heads ? deptHeads(d) : [])];
+      for (const id of people) if (active.get(id)) ids.add(Number(id));
+    }
+  }
+  return ids;
+}
+
 // [مسئول پیگیری] خبر دادن به مسئولِ پیگیریِ فرآیند. final=true یعنی نتیجهٔ نهایی (تایید/رد).
 function notifyOwner(rq, tplId, actorId, { final = false, title, body }) {
   const t = db.prepare('SELECT owner_user_id, owner_notify FROM workflow_templates WHERE id = ?').get(tplId);
@@ -937,6 +989,7 @@ r.post('/templates', (req, res) => {
   insertSteps(result.lastInsertRowid, steps);
   saveDailyReminder(result.lastInsertRowid, req.body?.daily_reminder);
   saveOwner(result.lastInsertRowid, req.body || {}, req.user.id); // پیش‌فرض: خودِ سازنده
+  saveQuickOptions(result.lastInsertRowid, req.body?.quick_options);
   res.json({ id: result.lastInsertRowid });
 });
 
@@ -968,6 +1021,7 @@ r.put('/templates/:id', (req, res) => {
       ex.past_days_limit, ex.owner_dept_id, ex.allow_on_behalf, ex.cc_mode, ex.cc_require_ack, t.id);
   saveDailyReminder(t.id, req.body?.daily_reminder);
   saveOwner(t.id, req.body || {});
+  saveQuickOptions(t.id, req.body?.quick_options);
   if (steps) {
     const hasOpen = db.prepare("SELECT 1 FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").get(t.id);
     if (hasOpen) return res.status(400).json({ error: 'تا زمانی که درخواست در جریان دارد، مراحل قابل تغییر نیست' });
@@ -1888,6 +1942,136 @@ r.post('/requests/:id/cancel', (req, res) => {
   db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, ?, ?, ?, ?)')
     .run(rq.id, rq.current_step, req.user.id, 'comment', 'درخواست لغو شد');
   res.json({ ok: true });
+});
+
+// ============================================================================
+//  [ماژول‌های کارتابل] پاسخِ روزانه به فرم‌هایی مثل «حوادث روزانه»
+//  هر گیرندهٔ یادآوری روزانه، امروز در کارتابلش یک کارت با گزینه‌های فرم می‌بیند
+//  (مثلاً «رخ داد / رخ نداد»). «رخ نداد» با امضا ثبت می‌شود؛ «رخ داد» فرم را باز می‌کند.
+//  مسئولِ پیگیری با هر پاسخ اعلان می‌گیرد و می‌بیند چه کسی دیده/پاسخ داده/هنوز ندیده.
+// ============================================================================
+function dailyCfg(t) {
+  try { const c = JSON.parse(t.daily_reminder || ''); return c?.enabled ? c : null; } catch { return null; }
+}
+// آیا امروز برای این فرآیند روزِ پاسخ است؟ (روزِ هفته در تنظیمات)
+function isCheckinDay(cfg, now) { return !cfg.days?.length || cfg.days.includes(now.weekday); }
+
+function canFollowTemplate(user, t) {
+  return t.owner_user_id === user.id || t.created_by === user.id || canAccessEverywhere(user) || canManageTemplate(user, t);
+}
+
+// کارت‌های امروزِ من
+r.get('/checkins/today', (req, res) => {
+  const now = tehranNow();
+  const tpls = db.prepare(`SELECT * FROM workflow_templates WHERE is_active = 1
+    AND daily_reminder IS NOT NULL AND daily_reminder != ''`).all();
+  const mark = db.prepare(`INSERT INTO workflow_checkins (template_id, user_id, day, seen_at) VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(template_id, user_id, day) DO UPDATE SET seen_at = COALESCE(seen_at, datetime('now'))`);
+  const get = db.prepare('SELECT * FROM workflow_checkins WHERE template_id = ? AND user_id = ? AND day = ?');
+  const items = [];
+  for (const t of tpls) {
+    const cfg = dailyCfg(t);
+    const options = quickOptionsOf(t);
+    if (!cfg || !options.length || !isCheckinDay(cfg, now)) continue;
+    if (!dailyRecipients(cfg).has(req.user.id)) continue;
+    mark.run(t.id, req.user.id, now.date); // باز شدنِ کارتابل = «دیده شد»
+    const c = get.get(t.id, req.user.id, now.date);
+    items.push({
+      template_id: t.id, template_name: t.name, day: now.date, options,
+      requires_signature: t.requester_signature !== 0 ? 1 : 0,
+      responded_at: c?.responded_at || null, option_key: c?.option_key || null,
+      option_label: c?.option_label || null, request_id: c?.request_id || null,
+    });
+  }
+  res.json({ items, pending: items.filter(i => !i.responded_at).length });
+});
+
+// ثبتِ پاسخ (برای گزینهٔ report، بعد از ثبتِ درخواست با request_id صدا زده می‌شود)
+r.post('/checkins', (req, res) => {
+  const now = tehranNow();
+  const { template_id, option_key, comment = '', request_id } = req.body || {};
+  const t = db.prepare('SELECT * FROM workflow_templates WHERE id = ? AND is_active = 1').get(template_id);
+  if (!t) return res.status(404).json({ error: 'فرآیند یافت نشد' });
+  const cfg = dailyCfg(t);
+  // گیرندگانِ یادآوری روزانه، یا هرکسی که این فرآیند در محدوده‌اش است (ثبت از پنجرهٔ «درخواست جدید»)
+  if (!(cfg && dailyRecipients(cfg).has(req.user.id)) && !templateInScope(req.user, t)) {
+    return res.status(403).json({ error: 'این فرم برای شما تعریف نشده است' });
+  }
+  const opt = quickOptionsOf(t).find(o => o.key === option_key);
+  if (!opt) return res.status(400).json({ error: 'گزینهٔ نامعتبر' });
+  let reqId = null;
+  // گزارشِ پیوسته اختیاری است؛ «رخ داد» هم مثل بقیهٔ گزینه‌ها با امضا و توضیح ثبت می‌شود
+  if (request_id) {
+    const rq = db.prepare('SELECT id FROM workflow_requests WHERE id = ? AND template_id = ? AND requester_id = ?')
+      .get(request_id, t.id, req.user.id);
+    if (!rq) return res.status(400).json({ error: 'درخواستِ پیوست‌شده معتبر نیست' });
+    reqId = rq.id;
+  }
+  const prev = db.prepare('SELECT responded_at FROM workflow_checkins WHERE template_id = ? AND user_id = ? AND day = ?')
+    .get(t.id, req.user.id, now.date);
+  if (prev?.responded_at) return res.status(400).json({ error: 'پاسخِ امروزِ شما قبلاً ثبت شده است' });
+  const signed = t.requester_signature !== 0 && !!db.prepare(
+    "SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(req.user.id);
+  db.prepare(`INSERT INTO workflow_checkins (template_id, user_id, day, seen_at, responded_at, option_key, option_label, comment, signed, request_id)
+    VALUES (?, ?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?)
+    ON CONFLICT(template_id, user_id, day) DO UPDATE SET responded_at = excluded.responded_at,
+      option_key = excluded.option_key, option_label = excluded.option_label, comment = excluded.comment,
+      signed = excluded.signed, request_id = excluded.request_id`)
+    .run(t.id, req.user.id, now.date, opt.key, opt.label, String(comment).slice(0, 1000), signed ? 1 : 0, reqId);
+  // هر پاسخ → اعلان به مسئولِ پیگیری (مگر خاموش کرده باشد)
+  if (t.owner_user_id && t.owner_user_id !== req.user.id && t.owner_notify !== 'off') {
+    const total = cfg ? dailyRecipients(cfg).size : 0;
+    const done = db.prepare('SELECT COUNT(*) c FROM workflow_checkins WHERE template_id = ? AND day = ? AND responded_at IS NOT NULL')
+      .get(t.id, now.date).c;
+    notifyUsers([t.owner_user_id], {
+      type: 'workflow',
+      title: `${opt.kind === 'report' ? '⚠️' : '✅'} ${t.name}: ${opt.label}`,
+      body: `${req.user.full_name} «${opt.label}» را${signed ? ' با امضا' : ''} ثبت کرد${comment ? ' — ' + String(comment).slice(0, 120) : ''}${total ? ` (${done.toLocaleString('fa-IR')} از ${total.toLocaleString('fa-IR')} نفر پاسخ داده‌اند)` : ''}`,
+      link: reqId ? `/cartable/${reqId}` : `/cartable?checkins=${t.id}`,
+    });
+  }
+  res.json({ ok: true, signed });
+});
+
+// گزارشِ پیگیری: چه کسی دیده / پاسخ داده / هنوز ندیده
+r.get('/checkins/status/:templateId', (req, res) => {
+  const t = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(req.params.templateId);
+  if (!t) return res.status(404).json({ error: 'فرآیند یافت نشد' });
+  if (!canFollowTemplate(req.user, t)) return res.status(403).json({ error: 'دسترسی غیرمجاز' });
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.day || '')) ? String(req.query.day) : tehranNow().date;
+  const cfg = dailyCfg(t);
+  const ids = cfg ? [...dailyRecipients(cfg)] : [];
+  const rows = new Map(db.prepare('SELECT * FROM workflow_checkins WHERE template_id = ? AND day = ?').all(t.id, day)
+    .map(c => [c.user_id, c]));
+  for (const uid of rows.keys()) if (!ids.includes(uid)) ids.push(uid);
+  const uq = db.prepare(`SELECT u.id, u.full_name, u.avatar_color, d.name AS department_name
+    FROM users u LEFT JOIN departments d ON d.id = u.department_id WHERE u.id = ?`);
+  const people = ids.map(id => {
+    const u = uq.get(id); if (!u) return null;
+    const c = rows.get(id);
+    return { ...u, seen_at: c?.seen_at || null, responded_at: c?.responded_at || null,
+      option_key: c?.option_key || null, option_label: c?.option_label || null,
+      comment: c?.comment || '', signed: !!c?.signed, request_id: c?.request_id || null };
+  }).filter(Boolean).sort((a, b) => (!!b.responded_at - !!a.responded_at) || (!!b.seen_at - !!a.seen_at));
+  res.json({ template: { id: t.id, name: t.name }, day, options: quickOptionsOf(t), people });
+});
+
+// یادآوریِ دوباره به کسانی که امروز هنوز پاسخ نداده‌اند
+r.post('/checkins/status/:templateId/renotify', (req, res) => {
+  const t = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(req.params.templateId);
+  if (!t) return res.status(404).json({ error: 'فرآیند یافت نشد' });
+  if (!canFollowTemplate(req.user, t)) return res.status(403).json({ error: 'دسترسی غیرمجاز' });
+  const cfg = dailyCfg(t);
+  if (!cfg) return res.json({ ok: true, notified: 0 });
+  const day = tehranNow().date;
+  const done = new Set(db.prepare('SELECT user_id FROM workflow_checkins WHERE template_id = ? AND day = ? AND responded_at IS NOT NULL')
+    .all(t.id, day).map(x => x.user_id));
+  const pending = [...dailyRecipients(cfg)].filter(id => !done.has(id) && id !== req.user.id);
+  if (pending.length) {
+    notifyUsers(pending, { type: 'reminder', title: `🔔 یادآوری: ${t.name}`,
+      body: `پاسخِ امروزِ «${t.name}» را هنوز ثبت نکرده‌اید`, link: '/cartable' });
+  }
+  res.json({ ok: true, notified: pending.length });
 });
 
 export default r;
