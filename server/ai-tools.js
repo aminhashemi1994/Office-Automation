@@ -31,7 +31,14 @@ export class ToolError extends Error {
 // ---------------------------------------------------------------------------
 const LOOPBACK = ['0.0.0.0', '::', ''].includes(config.host) ? '127.0.0.1' : config.host;
 
+// دستیار هرگز چیزی حذف یا لغو نمی‌کند — نه با متد DELETE و نه با مسیرهای حذف/لغو/خروج.
+// این قفل مستقل از مدل است: حتی اگر ابزاری اشتباهاً چنین مسیری بسازد، اجرا نمی‌شود.
+const FORBIDDEN_PATH = /\/(delete|delete-all|remove|cancel|leave|block|reassign)(\/|$|\?)/i;
+
 async function api(user, method, path, body) {
+  if (method === 'DELETE' || FORBIDDEN_PATH.test(path)) {
+    throw new ToolError('دستیار اجازهٔ حذف یا لغو ندارد؛ این کار را خودتان از صفحهٔ مربوطه انجام دهید');
+  }
   const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '2m' });
   let resp;
   try {
@@ -134,6 +141,26 @@ export function datesInText(text) {
     if (d) found.add(d);
   }
   return [...found];
+}
+
+// مبلغ/عدد به زبانِ کاربر ← عدد: «۸۰ میلیون تومان»، «۱.۵ میلیارد»، «۲۵۰ هزار ریال»، «80,000»
+// toRial: فیلدهای ریالی — «تومان» ×۱۰ می‌شود
+const SCALE = { هزار: 1e3, میلیون: 1e6, میلیارد: 1e9, 'k': 1e3, 'm': 1e6 };
+const AMOUNT_RE = /(\d+(?:[.\/٫]\d+)?)\s*(هزار|میلیون|میلیارد)?\s*(تومان|تومن|ریال)?/;
+export function parseAmount(input, { toRial = false } = {}) {
+  const s = enDigits(input).replace(/[,٬،]/g, '').trim();
+  const m = AMOUNT_RE.exec(s);
+  if (!m || !/\d/.test(s)) return null;
+  let n = Number(m[1].replace(/[\/٫]/, '.')) * (SCALE[m[2]] || 1);
+  if (toRial && /^توم/.test(m[3] || '')) n *= 10;
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+}
+const isMoneyField = (f) => /ریال|تومان|مبلغ|هزینه|قیمت|بودجه/.test(`${f.label} ${f.placeholder || ''}`);
+// مبلغ‌هایی که کاربر با واحد گفته («میلیون»، «تومان»…) — برای اصلاحِ تبدیلِ اشتباهِ مدل
+export function amountsInText(text) {
+  const out = [];
+  for (const m of enDigits(text).replace(/[,٬،]/g, '').matchAll(/\d+(?:[.\/٫]\d+)?\s*(?:هزار|میلیون|میلیارد)?\s*(?:تومان|تومن|ریال)|\d+(?:[.\/٫]\d+)?\s*(?:هزار|میلیون|میلیارد)/g)) out.push(m[0]);
+  return out;
 }
 
 export function normalizeTime(input) {
@@ -270,8 +297,8 @@ function coerceField(f, raw) {
   }
   const s = str(typeof raw === 'object' ? JSON.stringify(raw) : raw, 5000);
   if (f.type === 'number') {
-    const n = Number(enDigits(s).replace(/[,٬،\s]/g, ''));
-    if (!Number.isFinite(n)) return { error: `«${f.label}» باید عدد باشد` };
+    const n = parseAmount(s, { toRial: /ریال/.test(`${f.label} ${f.placeholder || ''}`) });
+    if (n === null) return { error: `«${f.label}» باید عدد باشد` };
     return { value: String(n), show: n.toLocaleString('fa-IR') };
   }
   if (f.type === 'date') {
@@ -511,8 +538,9 @@ const READ_TOOLS = {
     description: 'All departments (واحدها) with ids, heads (سرگروه) and directors (مدیر). Needed when a process step is approved by a department.',
     parameters: { type: 'object', properties: {} },
     label: 'خواندن واحدها',
-    async run() {
-      const rows = db.prepare('SELECT id, name, description FROM departments ORDER BY name').all();
+    async run(user) {
+      const data = await api(user, 'GET', '/departments');
+      const rows = data.departments || data;
       const names = (ids) => ids.map(id => userName(typeof id === 'object' ? id.id ?? id.user_id : id)).filter(Boolean);
       return {
         departments: rows.map(d => ({
@@ -608,7 +636,7 @@ const READ_TOOLS = {
 // ---------------------------------------------------------------------------
 const WRITE_TOOLS = {
   submit_request: {
-    description: 'Submit a new cartable request for a process (e.g. leave, purchase). First call get_process, collect EVERY required field from the user (ask for what is missing, never invent values), then call this. Field values may be keyed by field key or label. Date fields: Jalali like 1405/07/20 or the user\'s relative words verbatim (فردا، شنبه هفته بعد) — the server resolves them. Times like 14:30, time_range as {"start","end"}.',
+    description: 'Submit a new cartable request for a process (e.g. leave, purchase). First call get_process, collect EVERY required field from the user (ask for what is missing, never invent values), then call this. Field values may be keyed by field key or label. Date fields: Jalali like 1405/07/20 or the user\'s relative words verbatim (فردا، شنبه هفته بعد) — the server resolves them. Money/number fields: pass the user\'s words verbatim with unit (e.g. "۸۰ میلیون تومان") — the server converts to the field\'s unit. Times like 14:30, time_range as {"start","end"}.',
     parameters: {
       type: 'object',
       properties: {
@@ -865,8 +893,8 @@ const WRITE_TOOLS = {
       if (payload.steps.length) lines.push(['چک‌لیست', payload.steps.join('\n')]);
       if (payload.participant_ids.length) lines.push(['همکاران', payload.participant_ids.map(userName).join('، ')]);
       if (payload.project_id) {
-        const proj = db.prepare('SELECT name FROM projects WHERE id = ?').get(payload.project_id);
-        if (!proj) throw new ToolError('پروژه یافت نشد؛ با list_projects شناسه را پیدا کن');
+        const proj = ((await api(user, 'GET', '/projects')).projects || []).find(p => p.id === payload.project_id);
+        if (!proj) throw new ToolError('پروژه یافت نشد یا در دسترس شما نیست؛ با list_projects شناسه را پیدا کن');
         lines.push(['پروژه', proj.name]);
       }
       return { title: 'ساخت وظیفهٔ جدید', lines, payload };
@@ -890,8 +918,10 @@ const WRITE_TOOLS = {
     },
     label: 'ویرایش وظیفه',
     async prepare(user, a) {
-      const t = db.prepare('SELECT id, title FROM tasks WHERE id = ?').get(Number(a.task_id));
-      if (!t) throw new ToolError('وظیفه یافت نشد؛ با list_my_tasks شناسه را پیدا کن');
+      // فقط وظایفی که خودِ کاربر می‌بیند (مسئول، واگذارکننده یا مشارکت‌کننده)
+      const mine = await api(user, 'GET', '/tasks');
+      const t = [...mine.mine, ...mine.assigned].find(x => x.id === Number(a.task_id));
+      if (!t) throw new ToolError('این وظیفه یافت نشد یا به شما مربوط نیست؛ با list_my_tasks شناسه را پیدا کن');
       const body = {}, lines = [['وظیفه', t.title]];
       if (a.status) { body.status = a.status; lines.push(['وضعیت', STATUS_FA[a.status]]); }
       if (a.priority) { body.priority = a.priority; lines.push(['اولویت', PRIORITY_FA[a.priority]]); }
@@ -1390,9 +1420,13 @@ export const TOOL_DEFS = [...Object.entries(READ_TOOLS), ...Object.entries(WRITE
 }));
 
 // ابزارهای CRM فقط برای کسی که به CRM دسترسی دارد — بقیه حتی از وجودشان باخبر نمی‌شوند
+// ابزارهایی که کاربر اصلاً اجازه‌اش را ندارد به مدل داده نمی‌شوند (نه فقط در اجرا رد شوند)
+const BUILDER_TOOLS = new Set(['create_process', 'update_process']);
 export function toolDefsFor(user) {
   const crm = canUseCrm(user);
-  return TOOL_DEFS.filter(t => crm || !t.function.name.startsWith('crm_'));
+  const canBuild = canBuildWorkflows(user);
+  return TOOL_DEFS.filter(t => (crm || !t.function.name.startsWith('crm_'))
+    && (canBuild || !BUILDER_TOOLS.has(t.function.name)));
 }
 
 export const toolLabel = (name) => (READ_TOOLS[name] || WRITE_TOOLS[name])?.label || name;
@@ -1430,11 +1464,22 @@ function guardFormDates(schema, fields, userText) {
 
 // خروجی شاملِ final_args است: آرگومان‌ها پس از اصلاحِ سرور، تا اگر کاربر بعداً چیزی را
 // عوض کرد، مدل از نسخهٔ درست شروع کند نه از حدسِ اولش
+// اگر کاربر دقیقاً یک مبلغِ واحددار گفته و فقط یک فیلدِ مالی پر شده، عبارتِ خودِ کاربر ملاک است
+// تا سرور تبدیل کند (مدل‌های کوچک «۸۰ میلیون تومان» را اشتباه به ریال می‌برند)
+function guardFormMoney(schema, fields, userText) {
+  const said = amountsInText(userText);
+  if (said.length !== 1) return fields;
+  const byKey = new Map(Object.keys(fields).map(k => [norm(k), k]));
+  const money = schema.filter(f => f.type === 'number' && isMoneyField(f))
+    .map(f => byKey.get(norm(f.key)) ?? byKey.get(norm(f.label))).filter(k => k && fields[k] !== undefined && fields[k] !== '');
+  return money.length === 1 ? { ...fields, [money[0]]: said[0] } : fields;
+}
+
 export async function prepareWriteTool(user, name, args, { userText = '' } = {}) {
   let final = guardDates(args || {}, userText);
   if (name === 'submit_request' && final.fields) {
-    const t = await templateFor(user, final.process_id);
-    final = { ...final, fields: guardFormDates(schemaOf(t), final.fields, userText) };
+    const schema = schemaOf(await templateFor(user, final.process_id));
+    final = { ...final, fields: guardFormMoney(schema, guardFormDates(schema, final.fields, userText), userText) };
   }
   const prepared = await WRITE_TOOLS[name].prepare(user, final, { userText });
   return { ...prepared, finalArgs: final };

@@ -14,33 +14,55 @@ function get(key, fallback = '') {
   return db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key)?.value ?? fallback;
 }
 
-// مقادیرِ «تنظیمات سازمان» اولویت دارند؛ اگر خالی باشند از .env خوانده می‌شوند
-// (llm_Token / AI_API_KEY، AI_BASE_URL، AI_MODEL) تا بدون پیکربندیِ دستی هم کار کند.
-const ENV_KEY = () => String(process.env.AI_API_KEY || process.env.llm_Token || process.env.LLM_TOKEN || '').trim();
-const ENV_BASE = () => String(process.env.AI_BASE_URL || 'https://api.gapgpt.app/v1').trim();
-const ENV_MODEL = () => String(process.env.AI_MODEL || 'gpt-4.1-mini').trim();
+// اگر کلید در .env باشد (AI_API_KEY یا llm_Token)، پیکربندیِ .env ملاک است و دستیار برای
+// همهٔ کاربران روشن است (مگر AI_ENABLED=0). در غیر این صورت از «تنظیمات سازمان» خوانده می‌شود.
+const env = (k, d = '') => String(process.env[k] ?? d).trim();
+const ENV_KEY = () => env('AI_API_KEY') || env('llm_Token') || env('LLM_TOKEN');
 
 export function aiConfig() {
-  const dbKey = String(get('ai_api_key', '')).trim();
   const envKey = ENV_KEY();
-  // کلیدِ .env همیشه با آدرسِ .env جفت می‌شود (آدرسِ ذخیره‌شده مالِ کلیدِ تنظیمات است)
-  const base = (dbKey ? String(get('ai_base_url', '')).trim() : envKey ? ENV_BASE() : '').replace(/\/+$/, '');
-  // وقتی کلید از .env آمده و مدیر هنوز سوییچ را دست نزده، دستیار روشن است
-  const enabledSetting = get('ai_enabled', '');
+  if (envKey) {
+    return {
+      enabled: env('AI_ENABLED', '1') !== '0',
+      baseUrl: env('AI_BASE_URL', 'https://api.gapgpt.app/v1').replace(/\/+$/, ''),
+      apiKey: envKey,
+      keySource: 'env',
+      model: env('AI_MODEL', 'gpt-5-nano'),
+      temperature: Number(env('AI_TEMPERATURE', '0.3')) || 0,
+      reasoningEffort: env('AI_REASONING_EFFORT', 'low'),
+    };
+  }
+  const dbKey = String(get('ai_api_key', '')).trim();
   return {
-    enabled: enabledSetting === '1' || (enabledSetting === '' && !!envKey),
-    baseUrl: base,
-    apiKey: dbKey || envKey,
-    keySource: dbKey ? 'settings' : envKey ? 'env' : null,
-    model: String(get('ai_model', '')).trim() || ENV_MODEL(),
+    enabled: get('ai_enabled', '0') === '1',
+    baseUrl: String(get('ai_base_url', '')).trim().replace(/\/+$/, ''),
+    apiKey: dbKey,
+    keySource: dbKey ? 'settings' : null,
+    model: String(get('ai_model', '')).trim() || 'gpt-4o-mini',
     temperature: Number(get('ai_temperature', '0.3')) || 0,
+    reasoningEffort: env('AI_REASONING_EFFORT', 'low'),
   };
 }
+
+// مدل‌های استدلالی (gpt-5*، o1/o3/o4…) temperature دلخواه نمی‌پذیرند و توکن‌های فکرِ پنهان‌شان
+// از سقفِ خروجی کم می‌شود؛ پس سقفِ بزرگ‌تر با max_completion_tokens و reasoning_effort می‌گیرند
+const isReasoning = (model) => /^(gpt-5|o\d)/i.test(model);
 
 // آیا همه‌چیز برای پرسیدن آماده است؟
 export function aiReady() {
   const c = aiConfig();
   return c.enabled && !!c.baseUrl && !!c.apiKey;
+}
+
+function requestBody(c, model, { max_tokens, temperature, ...rest }) {
+  if (isReasoning(model)) {
+    return {
+      model, ...rest,
+      max_completion_tokens: Math.max(4000, (max_tokens || 1000) * 4),
+      ...(c.reasoningEffort ? { reasoning_effort: c.reasoningEffort } : {}),
+    };
+  }
+  return { model, temperature: temperature ?? c.temperature, max_tokens, ...rest };
 }
 
 // درخواستِ خام به ‎/chat/completions‎ — پیامِ کاملِ مدل (متن یا tool_calls) را برمی‌گرداند.
@@ -57,7 +79,7 @@ async function complete(body, { model } = {}) {
     resp = await fetch(`${c.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.apiKey}` },
-      body: JSON.stringify({ model: model || c.model, temperature: c.temperature, ...body }),
+      body: JSON.stringify(requestBody(c, model || c.model, body)),
       signal: ctrl.signal,
     });
   } catch (e) {

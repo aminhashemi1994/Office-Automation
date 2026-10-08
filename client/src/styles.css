@@ -995,3 +995,35 @@ select.input option { background: var(--surface); color: var(--text); }
   background: var(--bg-3); border-radius: 99px; color: var(--text-2);
 }
 .req-meta b { color: var(--text); font-weight: 600; }
+
+/* ---------- چک‌باکس یکدست در کل سامانه ----------
+   به‌جای چک‌باکسِ پیش‌فرضِ مرورگر (ریز، ناهماهنگ با تم تیره، بدون حالتِ فوکوس):
+   مربعِ هم‌رنگِ تم، تیکِ واضح، حلقهٔ فوکوس برای صفحه‌کلید، و برچسبِ کاملاً قابل‌کلیک. */
+input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none; margin: 0; flex-shrink: 0;
+  width: 18px !important; height: 18px !important; border-radius: 5px; cursor: pointer;
+  border: 1.6px solid var(--text-3); background: var(--bg-1);
+  display: inline-grid; place-content: center; vertical-align: middle;
+  transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+input[type="checkbox"]::after {
+  content: ''; width: 10px; height: 6px; margin-top: -2px;
+  border: solid #fff; border-width: 0 0 2.2px 2.2px; transform: rotate(-45deg) scale(0);
+  transition: transform .12s ease;
+}
+input[type="checkbox"]:checked { background: var(--primary); border-color: var(--primary); }
+input[type="checkbox"]:checked::after { transform: rotate(-45deg) scale(1); }
+input[type="checkbox"]:hover:not(:disabled) { border-color: var(--primary); }
+input[type="checkbox"]:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--primary-soft), 0 0 0 4.5px var(--primary); }
+input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
+
+/* برچسبی که چک‌باکس دارد: کلِ ردیف قابل‌کلیک با بازخوردِ هاور */
+label:has(> input[type="checkbox"]) {
+  cursor: pointer; user-select: none; border-radius: 9px;
+  padding: 6px 8px; margin-inline: -8px; line-height: 1.7;
+  transition: background-color .15s ease;
+}
+label:has(> input[type="checkbox"]):hover { background: var(--bg-2); }
+label:has(> input[type="checkbox"]:checked) { color: var(--text-1); }
+label:has(> input[type="checkbox"]:disabled) { cursor: not-allowed; opacity: .7; }
+label:has(> input[type="checkbox"]:disabled):hover { background: transparent; }
