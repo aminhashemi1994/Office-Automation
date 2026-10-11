@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Search, ChevronDown, Check, AlertTriangle } from 'lucide-react';
+import { X, Search, ChevronDown, Check, AlertTriangle, PenLine } from 'lucide-react';
 import { useStore } from '../store.jsx';
 import { initials } from '../utils.js';
 import { getToken } from '../api.js';
@@ -290,23 +290,36 @@ export function Segmented({ value, onChange, options, size = 'md' }) {
 }
 
 // پیش‌نمایشِ امضای خودِ کاربر هنگام تایید — تا بداند همین امضا در سند چاپی می‌نشیند
-export function MySignature() {
+// [امضای دستی] امضا خودکار درج نمی‌شود؛ کاربر خودش «درج امضا» را می‌زند.
+// signed / onChange از والد می‌آید و همراهِ اقدام به‌صورت sign فرستاده می‌شود.
+export function MySignature({ signed, onChange }) {
   const { user } = useStore();
   if (!user?.has_signature) {
     return (
       <div className="callout warn">
         <AlertTriangle size={16} />
         <div>
-          <b>امضای تصویری ثبت نکرده‌اید.</b> تایید شما ثبت می‌شود، ولی جای امضا در سند چاپی خالی می‌ماند.
+          <b>امضای تصویری ثبت نکرده‌اید.</b> ثبتِ شما انجام می‌شود، ولی جای امضا در سند چاپی خالی می‌ماند.
           امضای خود را از «پروفایل من» بارگذاری کنید.
         </div>
+      </div>
+    );
+  }
+  if (!signed) {
+    return (
+      <div className="sig-box" style={{ justifyContent: 'center', borderStyle: 'dashed' }}>
+        <button type="button" className="btn btn-ghost" onClick={() => onChange?.(true)}>
+          <PenLine size={16} /> درج امضا
+        </button>
+        <span className="sig-note">بدون زدنِ این دکمه، امضای شما در سند درج نمی‌شود.</span>
       </div>
     );
   }
   return (
     <div className="sig-box">
       <img src={`/api/users/${user.id}/signature?token=${encodeURIComponent(getToken())}`} alt="امضای شما" />
-      <span className="sig-note">این امضا پای تایید شما در سند ثبت می‌شود.</span>
+      <span className="sig-note">این امضا پای ثبتِ شما در سند درج می‌شود.</span>
+      <button type="button" className="btn btn-ghost btn-sm" onClick={() => onChange?.(false)}>برداشتن امضا</button>
     </div>
   );
 }

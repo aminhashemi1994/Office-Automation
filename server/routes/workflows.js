@@ -565,7 +565,9 @@ function requestDetail(id, userId) {
     LEFT JOIN users tu ON tu.id = a.target_user_id
     LEFT JOIN departments dpt ON dpt.id = u.department_id
     WHERE a.request_id = ? ORDER BY a.id`).all(id)
-    .map(a => ({ ...a, step_requires_signature: sigByStep.get(a.step_order) ?? 1 }));
+    .map(a => ({ ...a, step_requires_signature: sigByStep.get(a.step_order) ?? 1,
+      // [امضای دستی] اقدام‌های قدیمی (signed = NULL) امضاشده حساب می‌شوند
+      has_signature: a.has_signature && a.signed !== 0 ? 1 : 0, signed: a.signed === 0 ? 0 : 1 }));
   const cur = steps.find(s => s.step_order === req_.current_step);
   const viewer = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   const can_act = req_.status === 'in_progress' && !!cur && cur.approvers.includes(userId);
@@ -744,6 +746,8 @@ r.get('/templates', (req, res) => {
       ...t,
       steps: getSteps(t.id).map(s => enrichStep(s)),
       can_manage: canManageTemplate(req.user, t),
+      creator_name: t.created_by ? db.prepare('SELECT full_name FROM users WHERE id = ?').get(t.created_by)?.full_name || null : null,
+      can_change_creator: t.created_by === req.user.id || canAccessEverywhere(req.user),
       owner_dept_name: t.owner_dept_id
         ? db.prepare('SELECT name FROM departments WHERE id = ?').get(t.owner_dept_id)?.name || null : null,
       // مرحله‌هایی که هیچ مسئولی ندارند — هشدارِ فرم‌ساز
@@ -864,10 +868,27 @@ function templateExtras(body, prev = {}) {
 }
 
 // [مسئول پیگیری] ذخیرهٔ شخص و نوع اعلان
-function saveOwner(templateId, body, fallbackUserId) {
-  const has = body && (body.owner_user_id !== undefined || body.owner_notify !== undefined);
+// [سازنده] سازندهٔ فرآیند با ویرایش عوض نمی‌شود؛ فقط خودِ سازنده یا مدیریت/مدیر سامانه می‌تواند آن را به دیگری بسپارد.
+// owner_is_creator=1 یعنی مسئول پیگیری همیشه همان سازنده است (دو نقش یکی می‌شوند).
+function saveOwner(templateId, body, fallbackUserId, actor) {
+  const t0 = db.prepare('SELECT created_by FROM workflow_templates WHERE id = ?').get(templateId);
+  if (actor && body?.created_by !== undefined && (t0?.created_by === actor.id || canAccessEverywhere(actor))) {
+    const cb = Number(body.created_by);
+    if (cb && db.prepare('SELECT 1 FROM users WHERE id = ? AND is_active = 1').get(cb)) {
+      db.prepare('UPDATE workflow_templates SET created_by = ? WHERE id = ?').run(cb, templateId);
+    }
+  }
+  if (body?.owner_is_creator !== undefined) {
+    db.prepare('UPDATE workflow_templates SET owner_is_creator = ? WHERE id = ?').run(body.owner_is_creator ? 1 : 0, templateId);
+  }
+  const has = body && (body.owner_user_id !== undefined || body.owner_notify !== undefined || body.owner_is_creator !== undefined);
   if (!has && fallbackUserId === undefined) return;
-  const cur = db.prepare('SELECT owner_user_id, owner_notify FROM workflow_templates WHERE id = ?').get(templateId) || {};
+  const cur = db.prepare('SELECT owner_user_id, owner_notify, owner_is_creator, created_by FROM workflow_templates WHERE id = ?').get(templateId) || {};
+  if (cur.owner_is_creator) {
+    const mode = ['each', 'final', 'off'].includes(body?.owner_notify) ? body.owner_notify : (cur.owner_notify || 'each');
+    db.prepare('UPDATE workflow_templates SET owner_user_id = created_by, owner_notify = ? WHERE id = ?').run(mode, templateId);
+    return;
+  }
   let owner = body?.owner_user_id !== undefined ? (Number(body.owner_user_id) || null) : (cur.owner_user_id ?? fallbackUserId ?? null);
   if (owner && !db.prepare('SELECT 1 FROM users WHERE id = ?').get(owner)) owner = null;
   const mode = ['each', 'final', 'off'].includes(body?.owner_notify) ? body.owner_notify : (cur.owner_notify || 'each');
@@ -987,7 +1008,7 @@ r.post('/templates', (req, res) => {
       ex.allow_on_behalf, ex.cc_mode, ex.cc_require_ack);
   insertSteps(result.lastInsertRowid, steps);
   saveDailyReminder(result.lastInsertRowid, req.body?.daily_reminder);
-  saveOwner(result.lastInsertRowid, req.body || {}, req.user.id); // پیش‌فرض: خودِ سازنده
+  saveOwner(result.lastInsertRowid, { ...(req.body || {}), created_by: undefined }, req.user.id); // پیش‌فرض: خودِ سازنده
   saveQuickOptions(result.lastInsertRowid, req.body?.quick_options);
   res.json({ id: result.lastInsertRowid });
 });
@@ -1019,7 +1040,7 @@ r.put('/templates/:id', (req, res) => {
       ex.allow_attachments, ex.requester_final_approval, ex.leave_enabled, ex.leave_map,
       ex.past_days_limit, ex.owner_dept_id, ex.allow_on_behalf, ex.cc_mode, ex.cc_require_ack, t.id);
   saveDailyReminder(t.id, req.body?.daily_reminder);
-  saveOwner(t.id, req.body || {});
+  saveOwner(t.id, req.body || {}, undefined, req.user);
   saveQuickOptions(t.id, req.body?.quick_options);
   if (steps) {
     const hasOpen = db.prepare("SELECT 1 FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").get(t.id);
@@ -1503,7 +1524,7 @@ r.get('/requests/:id/signature/:actionId', (req, res) => {
   const action = db.prepare('SELECT * FROM workflow_actions WHERE id = ? AND request_id = ?')
     .get(req.params.actionId, rq.id);
   // امضا فقط برای اقدامِ «تایید» معنا دارد (نه رد/عبور/یادداشت)
-  if (!action || action.action !== 'approve') return res.status(404).json({ error: 'امضا برای این اقدام وجود ندارد' });
+  if (!action || action.action !== 'approve' || action.signed === 0) return res.status(404).json({ error: 'امضا برای این اقدام وجود ندارد' });
   const u = db.prepare('SELECT signature_path FROM users WHERE id = ?').get(action.actor_id);
   if (!u?.signature_path) return res.status(404).json({ error: 'امضایی ثبت نشده است' });
   const p = path.join(SIGNATURES_DIR, u.signature_path);
@@ -1624,7 +1645,11 @@ r.post('/requests/:id/action', (req, res) => {
     return res.json({ ok: true, status: 'in_progress', current_step: back.step_order });
   }
 
-  logAction(action, isDeputy ? `(به نیابت) ${comment}`.trim() : comment);
+  const logged = logAction(action, isDeputy ? `(به نیابت) ${comment}`.trim() : comment);
+  // [امضای دستی] امضا فقط وقتی درج می‌شود که خودِ تاییدکننده «درج امضا» را زده باشد
+  const signedNow = action === 'approve' && !finalStage && step.requires_signature !== 0 && !!req.body?.sign
+    && !!db.prepare("SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(req.user.id);
+  if (action === 'approve') db.prepare('UPDATE workflow_actions SET signed = ? WHERE id = ?').run(signedNow ? 1 : 0, logged.lastInsertRowid);
 
   if (action === 'reject') {
     db.prepare("UPDATE workflow_requests SET status = 'rejected', closed_at = datetime('now') WHERE id = ?").run(rq.id);
@@ -1684,7 +1709,7 @@ r.post('/requests/:id/action', (req, res) => {
   const nextApprovers = resolveApprovers(next, rq.requester_id);
   notifyOwner(rq, tpl.id, req.user.id, {
     title: `پیشرفت فرآیند: ${tpl.name} (${(rq.current_step).toLocaleString('fa-IR')} از ${steps.length.toLocaleString('fa-IR')})`,
-    body: `«${rq.title}» در مرحلهٔ «${step.title}» توسط ${req.user.full_name} ${action === 'skip' ? 'عبور داده شد' : step.requires_signature !== 0 ? 'تایید و امضا شد' : 'تایید شد'} و به «${next.title}» رسید`,
+    body: `«${rq.title}» در مرحلهٔ «${step.title}» توسط ${req.user.full_name} ${action === 'skip' ? 'عبور داده شد' : signedNow ? 'تایید و امضا شد' : 'تایید شد'} و به «${next.title}» رسید`,
   });
   notifyApprovers(next, nextApprovers, {
     type: 'workflow',
@@ -1972,7 +1997,7 @@ r.get('/checkins/today', (req, res) => {
 // ثبتِ پاسخ (برای گزینهٔ report، بعد از ثبتِ درخواست با request_id صدا زده می‌شود)
 r.post('/checkins', (req, res) => {
   const now = tehranNow();
-  const { template_id, option_key, comment = '', request_id } = req.body || {};
+  const { template_id, option_key, comment = '', request_id, sign } = req.body || {};
   const t = db.prepare('SELECT * FROM workflow_templates WHERE id = ? AND is_active = 1').get(template_id);
   if (!t) return res.status(404).json({ error: 'فرآیند یافت نشد' });
   const cfg = dailyCfg(t);
@@ -1993,7 +2018,7 @@ r.post('/checkins', (req, res) => {
   const prev = db.prepare('SELECT responded_at FROM workflow_checkins WHERE template_id = ? AND user_id = ? AND day = ?')
     .get(t.id, req.user.id, now.date);
   if (prev?.responded_at) return res.status(400).json({ error: 'پاسخِ امروزِ شما قبلاً ثبت شده است' });
-  const signed = t.requester_signature !== 0 && !!db.prepare(
+  const signed = !!sign && t.requester_signature !== 0 && !!db.prepare(
     "SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(req.user.id);
   db.prepare(`INSERT INTO workflow_checkins (template_id, user_id, day, seen_at, responded_at, option_key, option_label, comment, signed, request_id)
     VALUES (?, ?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?)

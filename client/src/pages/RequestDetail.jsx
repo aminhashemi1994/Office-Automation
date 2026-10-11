@@ -41,6 +41,7 @@ export default function RequestDetail() {
   const [stepFilter, setStepFilter] = useState(null);
   const historyRef = useRef(null);
   const [busy, setBusy] = useState(false);
+  const [sign, setSign] = useState(false); // [امضای دستی] فقط با زدنِ «درج امضا»
   const [makeTask, setMakeTask] = useState(null); // {title, assignee_type, assignee_id, deadline_hours}
   const [edit, setEdit] = useState(null);        // {title, data} — ویرایش عنوان و فرمِ درخواست
   const [ret, setRet] = useState(null);          // {to_step, resume_step, comment, attachments} — برگشت درخواست
@@ -69,8 +70,8 @@ export default function RequestDetail() {
   const act = async () => {
     setBusy(true);
     try {
-      await api(`/workflows/requests/${req.id}/action`, { method: 'POST', body: { action: confirm, comment, attachments: actionFiles } });
-      setConfirm(null); setComment(''); setActionFiles([]);
+      await api(`/workflows/requests/${req.id}/action`, { method: 'POST', body: { action: confirm, comment, attachments: actionFiles, sign: confirm === 'approve' && sign } });
+      setConfirm(null); setComment(''); setActionFiles([]); setSign(false);
       await load();
       refreshBadges();
       toast(confirm !== 'approve' ? (confirm === 'skip' ? 'بدون اظهارنظر عبور داده شد' : 'درخواست رد شد')
@@ -702,16 +703,16 @@ export default function RequestDetail() {
 
       {confirm && (
         <Modal title={confirm === 'approve' ? 'تایید درخواست' : confirm === 'skip' ? 'عبور از مرحله' : 'رد درخواست'}
-          onClose={() => { setConfirm(null); setActionFiles([]); }}
+          onClose={() => { setConfirm(null); setActionFiles([]); setSign(false); }}
           footer={<>
-            <button className="btn btn-ghost" onClick={() => { setConfirm(null); setActionFiles([]); }}>انصراف</button>
+            <button className="btn btn-ghost" onClick={() => { setConfirm(null); setActionFiles([]); setSign(false); }}>انصراف</button>
             <button className={`btn ${confirm === 'reject' ? 'btn-danger' : 'btn-primary'}`} onClick={act} disabled={busy}>
               {confirm === 'approve' ? 'تایید نهایی' : confirm === 'skip' ? 'عبور از این مرحله' : 'رد درخواست'}
             </button>
           </>}>
           {confirm === 'approve' && !req.can_final
             && req.steps.find(st => st.step_order === req.current_step)?.requires_signature !== 0 && (
-            <Field label="امضای شما"><MySignature /></Field>
+            <Field label="امضای شما"><MySignature signed={sign} onChange={setSign} /></Field>
           )}
           <Field label={confirm === 'reject' ? 'توضیحات (اختیاری)' : 'پی‌نوشت (اختیاری)'}>
             <textarea className="input" value={comment} onChange={e => setComment(e.target.value)} autoFocus

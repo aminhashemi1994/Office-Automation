@@ -99,7 +99,7 @@ export default function Cartable() {
     setBusy(true);
     try {
       const r = await api(`/workflows/requests/${quick.row.id}/action`, { method: 'POST',
-        body: { action: 'approve', comment: quick.comment } });
+        body: { action: 'approve', comment: quick.comment, sign: !!quick.sign } });
       setQuick(null); await load();
       toast(r.status === 'approved' ? 'تایید شد و درخواست بسته شد' : 'تایید شد و به مرحلهٔ بعد رفت');
     } catch (e) { toast(e.message, 'error'); }
@@ -290,7 +290,7 @@ export default function Cartable() {
             <button className="btn btn-ghost" onClick={() => setQuick(null)}>انصراف</button>
             <Link className="btn btn-ghost" to={`/cartable/${quick.row.id}`}>دیدن جزئیات</Link>
             <button className="btn btn-primary" disabled={busy} onClick={quickApprove}>
-              <Check size={16} /> {quick.row.step_requires_signature ? 'تایید و امضا' : 'تایید'}
+              <Check size={16} /> {quick.sign ? 'تایید و امضا' : 'تایید'}
             </button>
           </>}>
           <div className="req-meta">
@@ -298,7 +298,9 @@ export default function Cartable() {
             <span>مرحله: <b>{quick.row.step_title}</b></span>
             <span>درخواست‌دهنده: <b>{quick.row.requester_name}</b></span>
           </div>
-          {quick.row.step_requires_signature ? <Field label="امضای شما"><MySignature /></Field> : null}
+          {quick.row.step_requires_signature ? (
+            <Field label="امضای شما"><MySignature signed={!!quick.sign} onChange={v => setQuick(q => ({ ...q, sign: v }))} /></Field>
+          ) : null}
           <Field label="پی‌نوشت (اختیاری)">
             <textarea className="input" value={quick.comment} autoFocus
               onChange={e => setQuick(q => ({ ...q, comment: e.target.value }))} />
@@ -311,14 +313,16 @@ export default function Cartable() {
           footer={<>
             <button className="btn btn-ghost" onClick={() => setCiConfirm(null)}>انصراف</button>
             <button className="btn btn-primary" disabled={busy}
-              onClick={() => submitCheckin(ciConfirm.item, ciConfirm.option, { comment: ciConfirm.comment })}>
-              <Check size={16} /> {ciConfirm.item.requires_signature ? 'ثبت و امضا' : 'ثبت'}
+              onClick={() => submitCheckin(ciConfirm.item, ciConfirm.option, { comment: ciConfirm.comment, sign: !!ciConfirm.sign })}>
+              <Check size={16} /> {ciConfirm.sign ? 'ثبت و امضا' : 'ثبت'}
             </button>
           </>}>
           <p style={{ fontSize: 13, marginTop: 0 }}>
             پاسخِ امروزِ شما برای «{ciConfirm.item.template_name}»: <b>{ciConfirm.option.label}</b>
           </p>
-          {ciConfirm.item.requires_signature ? <Field label="امضای شما"><MySignature /></Field> : null}
+          {ciConfirm.item.requires_signature ? (
+            <Field label="امضای شما"><MySignature signed={!!ciConfirm.sign} onChange={v => setCiConfirm(q => ({ ...q, sign: v }))} /></Field>
+          ) : null}
           <Field label="توضیح (اختیاری)">
             <textarea className="input" value={ciConfirm.comment}
               onChange={e => setCiConfirm(q => ({ ...q, comment: e.target.value }))} />
@@ -398,13 +402,14 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
   try { modules = JSON.parse(tpl?.quick_options || '[]') || []; } catch {}
   const [mod, setMod] = useState(null);      // گزینهٔ انتخاب‌شده
   const [modNote, setModNote] = useState('');
-  useEffect(() => { setMod(null); setModNote(''); }, [tplId]);
+  const [modSign, setModSign] = useState(false);
+  useEffect(() => { setMod(null); setModNote(''); setModSign(false); }, [tplId]);
   const confirmOnly = !!mod; // هر گزینه‌ای انتخاب شود، با امضا و توضیح ثبت می‌شود
   const submitModule = async () => {
     setBusy(true);
     try {
       const r = await api('/workflows/checkins', { method: 'POST',
-        body: { template_id: tpl.id, option_key: mod.key, comment: modNote } });
+        body: { template_id: tpl.id, option_key: mod.key, comment: modNote, sign: modSign } });
       toast(`«${mod.label}» ${r.signed ? 'با امضا ' : ''}ثبت شد`);
       onClose(); onModuleDone?.();
     } catch (e) { toast(e.message, 'error'); }
@@ -471,7 +476,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
         <button className="btn btn-ghost" onClick={onClose}>انصراف</button>
         {confirmOnly ? (
           <button className="btn btn-primary" disabled={busy} onClick={submitModule}>
-            <Check size={16} /> {tpl?.requester_signature !== 0 ? 'ثبت و امضا' : 'ثبت'}
+            <Check size={16} /> {modSign ? 'ثبت و امضا' : 'ثبت'}
           </button>
         ) : (
           <button className="btn btn-primary" disabled={!tpl || !title.trim() || busy} onClick={submit}>ثبت درخواست</button>
@@ -519,7 +524,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
 
       {confirmOnly ? (
         <>
-          {tpl?.requester_signature !== 0 && <Field label="امضای شما"><MySignature /></Field>}
+          {tpl?.requester_signature !== 0 && <Field label="امضای شما"><MySignature signed={modSign} onChange={setModSign} /></Field>}
           <Field label="توضیح (اختیاری)">
             <textarea className="input" value={modNote} onChange={e => setModNote(e.target.value)} />
           </Field>

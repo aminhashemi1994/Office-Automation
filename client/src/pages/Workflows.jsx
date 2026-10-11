@@ -279,6 +279,10 @@ function TemplateModal({ tpl, onClose, onDone }) {
   // [مسئول پیگیری] چه کسی از پیشرفتِ درخواست‌های این فرآیند خبردار شود (پیش‌فرض: سازنده)
   const [ownerId, setOwnerId] = useState(tpl ? (tpl.owner_user_id ?? null) : user?.id ?? null);
   const [ownerNotify, setOwnerNotify] = useState(tpl?.owner_notify || 'each');
+  // [سازنده] با ویرایش عوض نمی‌شود؛ می‌شود آن را به دیگری سپرد یا با مسئول پیگیری یکی کرد
+  const [creatorId, setCreatorId] = useState(tpl ? tpl.created_by : user?.id);
+  const [ownerIsCreator, setOwnerIsCreator] = useState(!!tpl?.owner_is_creator);
+  const canChangeCreator = !tpl || !!tpl.can_change_creator;
   const setD = (k, v) => setDaily(x => ({ ...x, [k]: v }));
   // [ماژول‌های کارتابل] گزینه‌های سریعِ این فرم برای گیرندگانِ یادآوری روزانه (مثل «رخ داد / رخ نداد»)
   const [quickOpts, setQuickOpts] = useState(() => {
@@ -359,7 +363,9 @@ function TemplateModal({ tpl, onClose, onDone }) {
         notify_requester_on_final: notifyFinal, requester_signature: requesterSig,
         daily_reminder: daily,
         quick_options: quickOpts.filter(o => o.label?.trim()),
-        owner_user_id: ownerId || null, owner_notify: ownerNotify,
+        owner_user_id: ownerIsCreator ? (creatorId || null) : (ownerId || null), owner_notify: ownerNotify,
+        owner_is_creator: ownerIsCreator ? 1 : 0,
+        ...(tpl && canChangeCreator && creatorId !== tpl.created_by ? { created_by: creatorId } : {}),
         requester_final_approval: requesterFinal,
         past_days_limit: Number(pastDays) || 0,
         leave_enabled: leaveOn,
@@ -818,6 +824,23 @@ function TemplateModal({ tpl, onClose, onDone }) {
         </div>
       </Field>
 
+      {/* [سازنده و پیگیر] دو نقشِ جدا که می‌شود یکی‌شان کرد */}
+      <div className="card-pad panel-soft" style={{ marginTop: 6, marginBottom: 10 }}>
+        <b>سازندهٔ فرآیند</b>
+        <div style={{ fontSize: 11.8, color: 'var(--text-3)', margin: '4px 0 10px', lineHeight: 1.8 }}>
+          صاحبِ فرآیند که می‌تواند آن را ویرایش کند. با ویرایشِ دیگران عوض نمی‌شود.
+        </div>
+        {canChangeCreator && tpl ? (
+          <UserPicker value={creatorId} onChange={v => setCreatorId(v || tpl.created_by)} placeholder="انتخاب سازنده…" />
+        ) : (
+          <span className="badge badge-gray">{tpl ? (tpl.creator_name || '—') : (user?.full_name || '—')}</span>
+        )}
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.8, cursor: 'pointer', marginTop: 10 }}>
+          <input type="checkbox" checked={ownerIsCreator} onChange={e => setOwnerIsCreator(e.target.checked)} />
+          مسئول پیگیری همان سازنده باشد
+        </label>
+      </div>
+
       {/* [مسئول پیگیری] شخصی که پیشرفتِ هر درخواست را می‌بیند و اعلان می‌گیرد */}
       <div className="card-pad panel-soft" style={{ marginTop: 6, marginBottom: 10 }}>
         <b>مسئول پیگیری فرآیند</b>
@@ -826,11 +849,15 @@ function TemplateModal({ tpl, onClose, onDone }) {
           و هر وقت مرحله‌ای تایید/امضا شد پیام می‌گیرد.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto', gap: 10, alignItems: 'center' }}>
-          <UserPicker value={ownerId} onChange={setOwnerId} placeholder="انتخاب شخص…" />
+          {ownerIsCreator ? (
+            <span style={{ fontSize: 12.8 }}>همان سازنده: <b>{tpl ? (creatorId === tpl.created_by ? tpl.creator_name : 'سازندهٔ جدید') : user?.full_name}</b></span>
+          ) : (
+            <UserPicker value={ownerId} onChange={setOwnerId} placeholder="انتخاب شخص…" />
+          )}
           <Segmented size="sm" value={ownerNotify} onChange={setOwnerNotify}
             options={[{ value: 'each', label: 'هر مرحله', tone: 'primary' }, { value: 'final', label: 'فقط نتیجهٔ نهایی' }, { value: 'off', label: 'بدون پیام' }]} />
         </div>
-        {!ownerId && <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 6 }}>کسی انتخاب نشده؛ به هیچ‌کس پیام پیشرفت نمی‌رود.</div>}
+        {!ownerIsCreator && !ownerId && <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 6 }}>کسی انتخاب نشده؛ به هیچ‌کس پیام پیشرفت نمی‌رود.</div>}
       </div>
 
       {/* [یادآوری روزانه] هر روز در ساعت مشخص به واحدهای مربوطه اعلان برود */}

@@ -1226,6 +1226,11 @@ try { db.exec("ALTER TABLE workflow_templates ADD COLUMN owner_notify TEXT DEFAU
 // [ماژول‌های کارتابل] گزینه‌های سریعِ هر فرم، مثل «رخ داد / رخ نداد» برای حوادث روزانه:
 // [{key, label, kind:'confirm'|'report'}] — هر دو با امضا و توضیح ثبت می‌شوند؛ report (هشدار) برای مسئول پیگیری برجسته است
 try { db.exec("ALTER TABLE workflow_templates ADD COLUMN quick_options TEXT DEFAULT ''"); } catch {}
+// [امضای دستی] امضا دیگر خودکار درج نمی‌شود؛ تاییدکننده باید خودش «درج امضا» را بزند.
+// NULL = اقدام‌های قدیمی (پیش از این تغییر، امضا خودکار درج می‌شد)
+try { db.exec('ALTER TABLE workflow_actions ADD COLUMN signed INTEGER'); } catch {}
+// [سازنده/پیگیر] اگر ۱ باشد، مسئول پیگیری همیشه همان سازندهٔ فرآیند است
+try { db.exec('ALTER TABLE workflow_templates ADD COLUMN owner_is_creator INTEGER DEFAULT 0'); } catch {}
 // پاسخِ روزانهٔ هر گیرندهٔ یادآوری: چه کسی دیده، چه کسی پاسخ داده (و با کدام گزینه)
 db.exec(`
 CREATE TABLE IF NOT EXISTS workflow_checkins (

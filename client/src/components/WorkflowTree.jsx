@@ -51,7 +51,7 @@ export default function WorkflowTree({ req, onStepClick, activeStep = null, vari
       id: s.id, order: s.step_order, title: s.title, state: key,
       optional: !!s.is_optional,
       signature: s.requires_signature !== 0,
-      signed: decided?.action === 'approve' && s.requires_signature !== 0,
+      signed: decided?.action === 'approve' && s.requires_signature !== 0 && decided.signed !== 0,
       skipped: decided?.action === 'skip',
       people, namesInTitle,
       label: s.approver_label,
