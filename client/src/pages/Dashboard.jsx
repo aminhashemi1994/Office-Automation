@@ -14,7 +14,6 @@ import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fa, fmtRelative, fmtDateTime, deadlineState } from '../utils.js';
 import { Avatar } from '../components/common.jsx';
-import SupportChat from '../components/SupportChat.jsx';
 
 const PRIORITY = { low: ['کم', 'badge-gray'], normal: ['عادی', 'badge-sky'], high: ['زیاد', 'badge-amber'], urgent: ['فوری', 'badge-red'] };
 const progressOf = (t) => (t.step_count ? Math.round((t.step_done / t.step_count) * 100) : (t.status === 'done' ? 100 : 0));
@@ -323,7 +322,6 @@ export default function Dashboard() {
       </div>
 
       {/* پشتیبانی هوشمند — اگر مدیر سامانه فعالش کرده باشد */}
-      <SupportChat />
     </div>
   );
 }

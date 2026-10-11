@@ -323,16 +323,21 @@ function TaskPolicyCard() {
 function AiCard() {
   const { settings, refreshSettings, toast } = useStore();
   const [form, setForm] = useState({
-    ai_base_url: settings.ai_base_url || 'https://api.openai.com/v1',
-    ai_model: settings.ai_model || 'gpt-4o-mini',
+    // خالی = پیش‌فرضِ .env سرور؛ فقط برای جایگزین‌کردن پر می‌شود
+    ai_base_url: settings.ai_base_url || '',
+    ai_model: settings.ai_model || '',
     ai_api_key: '',
     ai_temperature: settings.ai_temperature || '0.3',
   });
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState(null);
-  const enabled = settings.ai_enabled === '1';
+  // وضعیتِ واقعی از سرور: کلید ممکن است از فایل .env آمده باشد
+  const [status, setStatus] = useState(null);
+  useEffect(() => { api('/ai/status').then(setStatus).catch(() => {}); }, [settings]);
+  const enabled = status ? status.enabled : settings.ai_enabled === '1';
   const hasKey = settings.ai_api_key_set === '1';
+  const envKey = status?.key_source === 'env';
 
   const save = async (patch) => {
     setBusy(true);
@@ -358,36 +363,43 @@ function AiCard() {
     <div className="card card-pad" style={{ marginTop: 18 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <Bot size={17} />
-        <b>پشتیبانی هوشمند (هوش مصنوعی)</b>
+        <b>دستیار هوشمند (هوش مصنوعی)</b>
         <span style={{ marginInlineStart: 'auto', opacity: busy ? .6 : 1 }}>
           <Segmented size="sm" value={enabled ? 1 : 0} onChange={v => save({ ai_enabled: v ? '1' : '0' })}
             options={[
-              { value: 1, label: 'فعال', tone: 'primary', hint: 'دکمهٔ پشتیبانی در داشبورد ظاهر می‌شود' },
+              { value: 1, label: 'فعال', tone: 'primary', hint: 'دکمهٔ «دستیار» در همهٔ صفحه‌ها ظاهر می‌شود' },
               { value: 0, label: 'خاموش', hint: 'هیچ درخواستی به بیرون فرستاده نمی‌شود' },
             ]} />
         </span>
       </div>
       <p style={{ fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.8, margin: '0 0 12px' }}>
-        پشتیبانِ هوشمند به کاربران یاد می‌دهد با بخش‌های سامانه کار کنند. سرویس باید با قرارداد
-        OpenAI سازگار باشد (مسیر <code>/chat/completions</code>) — سرویس‌های واسط داخلی هم همین را دارند.
-        <b> توجه:</b> با فعال‌کردن این بخش، متنِ پرسش کاربر و یک خلاصهٔ کوتاه از وضعیت او
-        (نام، واحد، تعداد کارهای باز) به سرویسِ بیرونی فرستاده می‌شود؛ محتوای کارها، پیام‌ها و
-        پرونده‌ها هرگز فرستاده نمی‌شود.
-        {enabled && !hasKey && (
+        دستیارِ هوشمند به کاربران یاد می‌دهد با سامانه کار کنند و به درخواستِ خودشان کار انجام می‌دهد
+        (ثبت درخواست، تایید/رد، تعریف فرآیند، وظیفه، یادداشت، پیام). هر کار پیش از انجام برای تأییدِ
+        کاربر نمایش داده می‌شود و فقط با دسترسی‌های خودِ همان کاربر اجرا می‌شود. سرویس باید با قرارداد
+        OpenAI سازگار و از فراخوانی ابزار (function calling) پشتیبانی کند.
+        <b> توجه:</b> با فعال‌کردن این بخش، متنِ گفتگو و اطلاعاتی که دستیار برای پاسخ می‌خواند
+        (مثلاً عنوان و فیلدهای درخواست‌ها، وظایف، نام همکاران) به سرویسِ بیرونی فرستاده می‌شود —
+        فقط در حدِ چیزهایی که خودِ کاربر اجازهٔ دیدنش را دارد.
+        {envKey && !hasKey && (
+          <span style={{ color: 'var(--green)', fontWeight: 700 }}> کلید و آدرس سرویس از فایل .env سرور خوانده می‌شود؛ نیازی به وارد کردن کلید نیست.</span>
+        )}
+        {enabled && !hasKey && !envKey && (
           <span style={{ color: 'var(--red)', fontWeight: 700 }}> فعال است ولی هنوز کلید وارد نشده — پشتیبان کار نمی‌کند.</span>
         )}
       </p>
       <div className="form-row">
         <Field label="آدرس سرویس (Base URL)" hint="مثلاً https://api.openai.com/v1">
           <input className="input" style={{ direction: 'ltr', textAlign: 'left' }} value={form.ai_base_url}
+            placeholder={envKey ? 'از .env سرور' : 'https://api.openai.com/v1'}
             onChange={e => setForm(f => ({ ...f, ai_base_url: e.target.value }))} />
         </Field>
         <Field label="نام مدل" hint="مثلاً gpt-4o-mini یا gpt-4o">
           <input className="input" style={{ direction: 'ltr', textAlign: 'left' }} value={form.ai_model}
+            placeholder={status?.model || 'gpt-4.1-mini'}
             onChange={e => setForm(f => ({ ...f, ai_model: e.target.value }))} />
         </Field>
         <Field label="کلید سرویس (API token)"
-          hint={hasKey ? 'کلید ذخیره شده است؛ خالی بگذارید تا تغییر نکند' : 'هنوز کلیدی ذخیره نشده است'}>
+          hint={hasKey ? 'کلید ذخیره شده است؛ خالی بگذارید تا تغییر نکند' : envKey ? 'از .env استفاده می‌شود؛ فقط برای جایگزین‌کردنش پر کنید' : 'هنوز کلیدی ذخیره نشده است'}>
           <input className="input" type="password" style={{ direction: 'ltr', textAlign: 'left' }} value={form.ai_api_key}
             placeholder={hasKey ? '••••••••  (ذخیره‌شده)' : 'sk-…'}
             onChange={e => setForm(f => ({ ...f, ai_api_key: e.target.value }))} />
@@ -401,7 +413,7 @@ function AiCard() {
         <button className="btn btn-primary" disabled={busy} onClick={() => save(form)}>
           <Save size={16} /> ذخیره تنظیمات هوش مصنوعی
         </button>
-        <button className="btn btn-ghost" disabled={testing || !hasKey} onClick={test}>
+        <button className="btn btn-ghost" disabled={testing || !(hasKey || envKey)} onClick={test}>
           {testing ? <Loader2 size={15} className="spin" /> : <ShieldCheck size={15} />} تست اتصال
         </button>
         {hasKey && (
