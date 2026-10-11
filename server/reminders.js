@@ -1,6 +1,6 @@
 import db from './db.js';
 import { notifyUser, notifyUsers } from './notify.js';
-import { resolveApprovers, currentStepOfRequest, dailyRecipients, tehranNow } from './routes/workflows.js';
+import { resolveApprovers, currentStepOfRequest, dailyRecipients, tehranNow, pendingApproversOf } from './routes/workflows.js';
 import { flushQueue } from './sms.js';
 import { notifyAudience } from './routes/announcements.js';
 
@@ -146,6 +146,14 @@ export function checkDailyWorkflowReminders() {
       if (cfg.approvers !== 0) {
         const open = db.prepare("SELECT * FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").all(t.id);
         for (const rq of open) {
+          // [گردش موازی] همهٔ کسانی که هنوز پاسخ نداده‌اند
+          if (t.parallel_flow) {
+            notifyUsers(pendingApproversOf(rq).filter(id => !ids.has(id)), {
+              type: 'reminder', title: `🔔 منتظر پاسخ شما: ${t.name}`,
+              body: `«${rq.title}» منتظر پاسخ شماست`, link: `/cartable/${rq.id}`,
+            });
+            continue;
+          }
           const step = currentStepOfRequest(rq);
           if (!step) continue;
           notifyUsers(resolveApprovers(step, rq.requester_id).filter(id => !ids.has(id)), {

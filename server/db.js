@@ -1310,6 +1310,12 @@ try { db.exec("ALTER TABLE workflow_templates ADD COLUMN quick_options TEXT DEFA
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN signed INTEGER'); } catch {}
 // [سازنده/پیگیر] اگر ۱ باشد، مسئول پیگیری همیشه همان سازندهٔ فرآیند است
 try { db.exec('ALTER TABLE workflow_templates ADD COLUMN owner_is_creator INTEGER DEFAULT 0'); } catch {}
+// [گردش موازی] بدون ترتیب: همهٔ مسئولان هم‌زمان درخواست را می‌گیرند و هر نفر فقط یک بار پاسخ می‌دهد
+try {
+  db.exec('ALTER TABLE workflow_templates ADD COLUMN parallel_flow INTEGER DEFAULT 0');
+  // فرآیندِ «حوادث روزانه» از همان ابتدا موازی باشد (فقط هنگامِ افزودنِ ستون، یک بار)
+  db.exec("UPDATE workflow_templates SET parallel_flow = 1 WHERE name LIKE '%حوادث%'");
+} catch {}
 // پاسخِ روزانهٔ هر گیرندهٔ یادآوری: چه کسی دیده، چه کسی پاسخ داده (و با کدام گزینه)
 db.exec(`
 CREATE TABLE IF NOT EXISTS workflow_checkins (

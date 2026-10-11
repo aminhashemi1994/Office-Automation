@@ -62,7 +62,8 @@ export default function Cartable() {
     setInbox(i.requests); setMine(m.requests); setFollowing(f.requests || []);
     // درخت‌های باز، با دادهٔ تازه به‌روز شوند
     Object.keys(treesRef.current).forEach(id => openTree(Number(id), true));
-    setCartableCount(i.requests.length + (ci.pending || 0));
+    setCartableCount(i.requests.length + (ci.items || []).filter(c => !c.responded_at
+      && !i.requests.some(r => r.template_id === c.template_id && r.parallel && r.can_quick_approve)).length);
     setTemplates(t.templates.filter(x => x.is_active));
     if (canBuild) {
       const a = await api('/workflows/requests/all');
@@ -88,6 +89,9 @@ export default function Cartable() {
   };
   // همهٔ گزینه‌ها (رخ داد / رخ نداد) یک شکل باز می‌شوند: امضا + توضیح
   const pickOption = (item, option) => setCiConfirm({ item, option, comment: '' });
+  // اگر برای همین فرآیند درخواستِ بازی منتظر پاسخِ من است، همان ردیف کافی است (یک پرسش، نه دو تا)
+  const cardList = checkins.filter(c => c.responded_at
+    || !inbox.some(r => r.template_id === c.template_id && r.parallel && r.can_quick_approve));
   // فرآیندهای روزانه‌ای که من پیگیرشان هستم
   const followedDaily = templates.filter(t => {
     if (t.owner_user_id !== user.id && t.created_by !== user.id) return false;
@@ -99,9 +103,10 @@ export default function Cartable() {
     setBusy(true);
     try {
       const r = await api(`/workflows/requests/${quick.row.id}/action`, { method: 'POST',
-        body: { action: 'approve', comment: quick.comment, sign: !!quick.sign } });
+        body: { action: 'approve', comment: quick.comment, sign: !!quick.sign, option_key: quick.option?.key } });
       setQuick(null); await load();
-      toast(r.status === 'approved' ? 'تایید شد و درخواست بسته شد' : 'تایید شد و به مرحلهٔ بعد رفت');
+      toast(quick.row.parallel ? `پاسخ شما${quick.option ? ` «${quick.option.label}»` : ''} ثبت شد`
+        : r.status === 'approved' ? 'تایید شد و درخواست بسته شد' : 'تایید شد و به مرحلهٔ بعد رفت');
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
   };
@@ -125,8 +130,8 @@ export default function Cartable() {
       <div className="page-head">
         <div className="tabs">
           <button className={`tab ${tab === 'inbox' ? 'active' : ''}`} onClick={() => setTab('inbox')}>
-            در انتظار اقدام من {(inbox.length + checkins.filter(c => !c.responded_at).length) > 0 && (
-              <span className="badge-count">{(inbox.length + checkins.filter(c => !c.responded_at).length).toLocaleString('fa-IR')}</span>
+            در انتظار اقدام من {(inbox.length + cardList.filter(c => !c.responded_at).length) > 0 && (
+              <span className="badge-count">{(inbox.length + cardList.filter(c => !c.responded_at).length).toLocaleString('fa-IR')}</span>
             )}
           </button>
           <button className={`tab ${tab === 'mine' ? 'active' : ''}`} onClick={() => setTab('mine')}>درخواست‌های من</button>
@@ -154,9 +159,9 @@ export default function Cartable() {
       </div>
 
       {/* [ماژول‌های کارتابل] پاسخِ روزانه با یک کلیک */}
-      {tab === 'inbox' && checkins.length > 0 && (
+      {tab === 'inbox' && cardList.length > 0 && (
         <div style={{ display: 'grid', gap: 10, marginBottom: 14 }}>
-          {checkins.map(c => (
+          {cardList.map(c => (
             <div key={c.template_id} className="card card-pad"
               style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
                 borderInlineStart: `4px solid ${c.responded_at ? 'var(--green)' : 'var(--amber)'}` }}>
@@ -259,11 +264,21 @@ export default function Cartable() {
                     <td style={{ color: 'var(--text-3)', fontSize: 12.5 }}>{fmtRelative(r.created_at)}</td>
                     {tab === 'inbox' && (
                       <td>
-                        {r.can_quick_approve && (
+                        {r.can_quick_approve && (r.parallel && r.quick_options?.length ? (
+                          // [گردش موازی] پاسخ مستقیم با گزینه‌ها — بدون تاییدِ جداگانه
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            {r.quick_options.map(o => (
+                              <button key={o.key} className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}
+                                onClick={() => setQuick({ row: r, comment: '', option: o })}>
+                                <Check size={14} /> {o.label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
                           <button className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }} onClick={() => setQuick({ row: r, comment: '' })}>
-                            <Check size={14} /> {r.step_requires_signature ? 'تایید و امضا' : 'تایید'}
+                            <Check size={14} /> {r.step_requires_signature ? 'تایید و امضا' : r.parallel ? 'ثبت پاسخ' : 'تایید'}
                           </button>
-                        )}
+                        ))}
                       </td>
                     )}
                   </tr>
@@ -285,17 +300,17 @@ export default function Cartable() {
       </div>
 
       {quick && (
-        <Modal title={`تایید: ${quick.row.title}`} onClose={() => setQuick(null)}
+        <Modal title={quick.option ? `${quick.option.label}: ${quick.row.title}` : `تایید: ${quick.row.title}`} onClose={() => setQuick(null)}
           footer={<>
             <button className="btn btn-ghost" onClick={() => setQuick(null)}>انصراف</button>
             <Link className="btn btn-ghost" to={`/cartable/${quick.row.id}`}>دیدن جزئیات</Link>
             <button className="btn btn-primary" disabled={busy} onClick={quickApprove}>
-              <Check size={16} /> {quick.sign ? 'تایید و امضا' : 'تایید'}
+              <Check size={16} /> {quick.row.parallel ? 'ثبت پاسخ' : quick.sign ? 'تایید و امضا' : 'تایید'}
             </button>
           </>}>
           <div className="req-meta">
             <span>فرآیند: <b>{quick.row.template_name}</b></span>
-            <span>مرحله: <b>{quick.row.step_title}</b></span>
+            {quick.option ? <span>پاسخ شما: <b>{quick.option.label}</b></span> : <span>مرحله: <b>{quick.row.step_title}</b></span>}
             <span>درخواست‌دهنده: <b>{quick.row.requester_name}</b></span>
           </div>
           {quick.row.step_requires_signature ? (

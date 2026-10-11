@@ -32,7 +32,58 @@ function Face({ p, size = 22 }) {
   );
 }
 
+// [گردش موازی] بدون ترتیب: فقط اینکه درخواست به چه کسانی رفته، چه کسی پاسخ داده، دیده یا ندیده
+function ParallelView({ req, variant }) {
+  const people = req.parallel_people || [];
+  const answered = people.filter(p => p.answered_at);
+  const seen = people.filter(p => !p.answered_at && p.seen_at);
+  const unseen = people.filter(p => !p.answered_at && !p.seen_at);
+  const closedOk = req.status === 'approved';
+  const Group = ({ title, list, render }) => list.length > 0 && (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>{title} ({fa(list.length)})</div>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {list.map(p => (
+          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12.8 }}>
+            <Face p={p} />
+            <b>{p.full_name}</b>
+            {p.department_name && <span style={{ color: 'var(--text-3)' }}>· {p.department_name}</span>}
+            <span style={{ flex: 1 }} />
+            {render(p)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <div className={`wf-tree wf-${variant}`}>
+      <div className="wf-summary">
+        <div className="wf-summary-head">
+          <span className="wf-count"><b>{fa(answered.length)}</b> از {fa(people.length)} نفر پاسخ داده‌اند</span>
+          {closedOk && <span className="wf-pill ok"><Check size={11} /> فرآیند کامل شد</span>}
+          {req.status === 'rejected' && <span className="wf-pill bad"><X size={11} /> رد شد</span>}
+          {req.status === 'cancelled' && <span className="wf-pill muted">لغو شد</span>}
+        </div>
+        <div className="wf-segs" aria-hidden="true">
+          {people.map(p => <span key={p.id} className={`wf-seg ${p.answered_at ? 'done' : p.seen_at ? 'current' : 'pending'}`} />)}
+        </div>
+        <Group title="پاسخ داده‌اند" list={answered} render={p => (<>
+          {p.answer && <span className="wf-pill ok" title={p.answer}><Check size={11} /> {p.answer.length > 40 ? p.answer.slice(0, 40) + '…' : p.answer}</span>}
+          <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}>{fmtDateTime(p.answered_at)}</span>
+        </>)} />
+        <Group title="دیده‌اند، هنوز پاسخ نداده‌اند" list={seen} render={p => (
+          <span className="wf-pill seen" title={fmtDateTime(p.seen_at)}><Eye size={11} /> دیده</span>
+        )} />
+        <Group title="هنوز ندیده‌اند" list={unseen} render={() => (
+          <span className="wf-pill muted"><EyeOff size={11} /> هنوز ندیده</span>
+        )} />
+      </div>
+    </div>
+  );
+}
+
 export default function WorkflowTree({ req, onStepClick, activeStep = null, variant = 'vertical' }) {
+  if (req.parallel && req.status !== 'awaiting_requester') return <ParallelView req={req} variant={variant} />;
   const rejectedAt = req.actions?.find(a => a.action === 'reject')?.step_order ?? null;
   const finalStage = !!req.requester_final_approval || req.status === 'awaiting_requester';
 

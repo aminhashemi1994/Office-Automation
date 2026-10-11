@@ -218,6 +218,8 @@ export function canViewRequest(user, rq) {
   if (rq.status === 'in_progress') {
     const step = currentStepOf(rq);
     if (step && resolveApprovers(step, rq.requester_id).includes(user.id)) return true;
+    // [گردش موازی] مسئولِ هر مرحله‌ای که هنوز باز است
+    if (isParallel(rq) && myParallelSteps(rq, user.id).length) return true;
   }
   return false;
 }
@@ -531,6 +533,122 @@ function currentStepWatch(rq) {
     seen: people.some(p => p.seen_at), received: people.some(p => p.received_at) };
 }
 
+
+// ============================================================================
+//  [گردش موازی] ترتیبی در کار نیست: همهٔ مراحل هم‌زمان باز‌اند.
+//  هر شخص فقط یک بار پاسخ می‌دهد (اگر در چند مرحله باشد، یک پاسخ همه را می‌بندد).
+//  وقتی همهٔ مراحل پاسخ گرفتند، درخواست بسته می‌شود.
+// ============================================================================
+function isParallel(rq) {
+  return !!db.prepare('SELECT parallel_flow FROM workflow_templates WHERE id = ?').get(rq.template_id)?.parallel_flow;
+}
+// اقدام‌های این دور (پس از آخرین ثبت/ارسالِ مجدد)
+function roundStartId(rq) {
+  return db.prepare(`SELECT MAX(id) m FROM workflow_actions WHERE request_id = ? AND action IN ('submit', 'resubmit')`).get(rq.id)?.m || 0;
+}
+function parallelDone(rq) {
+  const since = roundStartId(rq);
+  return new Map(db.prepare(`SELECT step_order, actor_id, comment, created_at, signed FROM workflow_actions
+    WHERE request_id = ? AND id > ? AND action IN ('approve', 'skip') ORDER BY id`).all(rq.id, since)
+    .map(a => [a.step_order, a]));
+}
+function parallelPendingSteps(rq) {
+  const done = parallelDone(rq);
+  return requestSteps(rq).filter(s => !done.has(s.step_order));
+}
+// مراحلِ بازی که این شخص مسئولشان است
+function myParallelSteps(rq, userId) {
+  return parallelPendingSteps(rq).filter(s => resolveApprovers(s, rq.requester_id).includes(userId));
+}
+// وضعیتِ هر نفر برای نمودار: پاسخ داده / دیده / ندیده
+function parallelPeople(rq) {
+  const done = parallelDone(rq);
+  const sinceAt = db.prepare('SELECT created_at FROM workflow_actions WHERE id = ?').get(roundStartId(rq))?.created_at || '';
+  const seenQ = db.prepare('SELECT last_seen_at FROM workflow_request_views WHERE request_id = ? AND user_id = ? AND last_seen_at >= ?');
+  const uq = db.prepare(`SELECT u.id, u.full_name, u.avatar_color, d.name AS department_name
+    FROM users u LEFT JOIN departments d ON d.id = u.department_id WHERE u.id = ?`);
+  const people = new Map();
+  for (const s of requestSteps(rq)) {
+    const act = done.get(s.step_order);
+    const ids = act ? [act.actor_id] : resolveApprovers(s, rq.requester_id);
+    for (const id of ids) {
+      if (people.has(id)) { people.get(id).steps.push(s.title); continue; }
+      const u = uq.get(id); if (!u) continue;
+      people.set(id, { ...u, steps: [s.title],
+        answered_at: act?.created_at || null, answer: act?.comment || '', signed: act ? act.signed !== 0 : false,
+        seen_at: seenQ.get(rq.id, id, sinceAt)?.last_seen_at || null });
+    }
+  }
+  return [...people.values()];
+}
+// [گردش موازی] چه کسانی هنوز باید پاسخ بدهند
+export function pendingApproversOf(rq) {
+  const ids = new Set();
+  for (const s of parallelPendingSteps(rq)) for (const id of resolveApprovers(s, rq.requester_id)) ids.add(id);
+  return [...ids];
+}
+// [گردش موازی] اعلان به همهٔ مسئولانِ همهٔ مراحل (هر نفر یک بار)
+function notifyAllParallel(rq, payload, exceptId) {
+  const ids = new Set();
+  for (const s of parallelPendingSteps(rq)) { // فقط کسانی که هنوز پاسخ نداده‌اند
+    if (s.notify_approver === 0) continue;
+    for (const id of resolveApprovers(s, rq.requester_id)) if (id !== exceptId) ids.add(id);
+  }
+  if (ids.size) notifyUsers([...ids], payload);
+}
+function quickOptionsOfTemplate(templateId) {
+  try { const v = JSON.parse(db.prepare('SELECT quick_options FROM workflow_templates WHERE id = ?').get(templateId)?.quick_options || '[]'); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+}
+
+// پاسخِ یک نفر در گردش موازی: همهٔ مراحلِ بازِ او یک‌جا بسته می‌شوند. خروجی: {status} یا {error}
+function actParallel(rq, tpl, user, { option_key, comment = '', sign = false, attIds = [] } = {}) {
+  const mine = myParallelSteps(rq, user.id);
+  if (!mine.length) return { error: 'پاسخ شما برای این درخواست قبلاً ثبت شده یا مسئول آن نیستید' };
+  const options = quickOptionsOfTemplate(tpl.id);
+  let opt = null;
+  if (options.length) {
+    opt = options.find(o => o.key === option_key);
+    if (!opt) return { error: `یکی از گزینه‌ها (${options.map(o => o.label).join(' / ')}) را انتخاب کنید` };
+  }
+  const note = String(comment || '').trim();
+  const text = opt ? `${opt.label}${note ? ' — ' + note : ''}` : note;
+  const signed = !!sign && !!db.prepare("SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(user.id);
+  const ins = db.prepare(`INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments, signed)
+    VALUES (?, ?, ?, 'approve', ?, ?, ?)`);
+  for (const s of mine) ins.run(rq.id, s.step_order, user.id, text, JSON.stringify(attIds), signed ? 1 : 0);
+  // پاسخِ روزانهٔ امروز هم با همین ثبت می‌شود (یک بار پاسخ، نه دو بار)
+  if (opt) {
+    db.prepare(`INSERT INTO workflow_checkins (template_id, user_id, day, seen_at, responded_at, option_key, option_label, comment, signed, request_id)
+      VALUES (?, ?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?)
+      ON CONFLICT(template_id, user_id, day) DO UPDATE SET responded_at = COALESCE(workflow_checkins.responded_at, excluded.responded_at),
+        option_key = COALESCE(workflow_checkins.option_key, excluded.option_key),
+        option_label = COALESCE(workflow_checkins.option_label, excluded.option_label),
+        comment = CASE WHEN workflow_checkins.responded_at IS NULL THEN excluded.comment ELSE workflow_checkins.comment END,
+        request_id = COALESCE(workflow_checkins.request_id, excluded.request_id)`)
+      .run(tpl.id, user.id, tehranNow().date, opt.key, opt.label, note.slice(0, 1000), signed ? 1 : 0, rq.id);
+  }
+  const left = parallelPendingSteps(rq);
+  const total = requestSteps(rq).length;
+  notifyOwner(rq, tpl.id, user.id, {
+    title: `${opt?.kind === 'report' ? '⚠️ ' : ''}${tpl.name}: ${opt ? opt.label : 'تایید'}`,
+    body: `${user.full_name} در «${rq.title}» ${opt ? `«${opt.label}»` : 'تایید'} را ثبت کرد${note ? ' — ' + note.slice(0, 120) : ''} (${(total - left.length).toLocaleString('fa-IR')} از ${total.toLocaleString('fa-IR')})`,
+  });
+  if (left.length) {
+    // مرحلهٔ فعلی فقط برای برچسبِ فهرست‌هاست
+    db.prepare('UPDATE workflow_requests SET current_step = ? WHERE id = ?').run(left[0].step_order, rq.id);
+    return { status: 'in_progress' };
+  }
+  if (tpl.requester_final_approval && rq.requester_id !== user.id) {
+    db.prepare(`UPDATE workflow_requests SET status = 'awaiting_requester', step_due_at = NULL, last_reminded_at = NULL WHERE id = ?`).run(rq.id);
+    notifyUsers([rq.requester_id], { type: 'workflow', title: `در انتظار تایید نهایی شما: ${tpl.name}`,
+      body: `«${rq.title}» همهٔ پاسخ‌ها را گرفت و برای تایید نهایی در کارتابل شماست`, link: `/cartable/${rq.id}` });
+    return { status: 'awaiting_requester' };
+  }
+  const task_id = closeAsApproved(rq, tpl, user.id);
+  return { status: 'approved', task_id };
+}
+
 function requestDetail(id, userId) {
   const req_ = db.prepare(`
     SELECT r.*, t.name AS template_name, t.form_schema, t.requester_signature,
@@ -571,13 +689,16 @@ function requestDetail(id, userId) {
       has_signature: a.has_signature && a.signed !== 0 ? 1 : 0, signed: a.signed === 0 ? 0 : 1 }));
   const cur = steps.find(s => s.step_order === req_.current_step);
   const viewer = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  const can_act = req_.status === 'in_progress' && !!cur && cur.approvers.includes(userId);
+  const parallel = isParallel(req_);
+  const can_act = req_.status === 'in_progress'
+    && (parallel ? myParallelSteps(req_, userId).length > 0 : !!cur && cur.approvers.includes(userId));
   // [تایید نهایی درخواست‌دهنده] درخواست همهٔ مراحل را طی کرده و منتظر تایید نهاییِ خودِ اوست
   const can_final = req_.status === 'awaiting_requester'
     && (req_.requester_id === userId || viewer?.role === 'admin');
   // [برگشت] تاییدکنندهٔ مرحلهٔ فعلی می‌تواند به مراحل قبل یا به درخواست‌دهنده برگرداند؛
   // درخواست‌دهنده در مرحلهٔ تایید نهایی می‌تواند به «هر مرحله‌ای» برگرداند.
-  const can_return = can_act || can_final;
+  // [گردش موازی] برگشت به مرحلهٔ قبل معنا ندارد (ترتیبی نیست)
+  const can_return = (can_act && !parallel) || can_final;
   const return_min_step = can_final ? 1 : 0;   // ۰ = برگشت به درخواست‌دهنده برای اصلاح
   const return_max_step = can_final ? steps.length : Math.max(0, req_.current_step - 1);
   // [اصلاح] درخواست برای اصلاح برگشته و خودِ درخواست‌دهنده باید دوباره ارسالش کند
@@ -621,8 +742,11 @@ function requestDetail(id, userId) {
       const la = lastAction.get(v.user_id);
       return { ...v, last_action: la ? { action: la.action, created_at: la.created_at } : null };
     });
-  const step_watch = currentStepWatch(req_);
+  const step_watch = parallel ? null : currentStepWatch(req_);
   return {
+    parallel: parallel ? 1 : 0,
+    parallel_people: parallel ? parallelPeople(req_) : undefined,
+    quick_options: parallel ? quickOptionsOfTemplate(req_.template_id) : [],
     views, open_questions, step_watch,
     can_receive: can_act && !!step_watch && !step_watch.people.find(p => p.id === userId)?.received_at,
     my_open_questions: open_questions.filter(q => q.target_user_id === userId).map(q => q.id),
@@ -960,6 +1084,7 @@ function notifyOwner(rq, tplId, actorId, { final = false, title, body }) {
 // [پیشرفت] چند مرحله از چند مرحله طی شده است
 function progressOf(rq) {
   const total = requestSteps(rq).length;
+  if (rq.status === 'in_progress' && isParallel(rq)) return { done: total - parallelPendingSteps(rq).length, total };
   const done = rq.status === 'approved' || rq.status === 'awaiting_requester' ? total
     : Math.max(0, Math.min(total, (rq.current_step || 1) - 1));
   return { done, total };
@@ -1011,6 +1136,7 @@ r.post('/templates', (req, res) => {
   saveDailyReminder(result.lastInsertRowid, req.body?.daily_reminder);
   saveOwner(result.lastInsertRowid, { ...(req.body || {}), created_by: undefined }, req.user.id); // پیش‌فرض: خودِ سازنده
   saveQuickOptions(result.lastInsertRowid, req.body?.quick_options);
+  if (req.body?.parallel_flow !== undefined) db.prepare('UPDATE workflow_templates SET parallel_flow = ? WHERE id = ?').run(req.body.parallel_flow ? 1 : 0, result.lastInsertRowid);
   res.json({ id: result.lastInsertRowid });
 });
 
@@ -1043,6 +1169,7 @@ r.put('/templates/:id', (req, res) => {
   saveDailyReminder(t.id, req.body?.daily_reminder);
   saveOwner(t.id, req.body || {}, undefined, req.user);
   saveQuickOptions(t.id, req.body?.quick_options);
+  if (req.body?.parallel_flow !== undefined) db.prepare('UPDATE workflow_templates SET parallel_flow = ? WHERE id = ?').run(req.body.parallel_flow ? 1 : 0, t.id);
   if (steps) {
     const hasOpen = db.prepare("SELECT 1 FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").get(t.id);
     if (hasOpen) return res.status(400).json({ error: 'تا زمانی که درخواست در جریان دارد، مراحل قابل تغییر نیست' });
@@ -1197,6 +1324,10 @@ r.post('/requests/:id/ack', (req, res) => {
 
 // خلاصهٔ وضعیتِ مرحلهٔ فعلی برای فهرست‌ها: seen | received | null (دیده‌نشده)
 function watchSummary(rq) {
+  if (rq.status === 'in_progress' && isParallel(rq)) {
+    const ppl = parallelPeople(rq).filter(p => !p.answered_at);
+    return { seen: ppl.some(p => p.seen_at), received: false };
+  }
   const w = currentStepWatch(rq);
   if (!w) return null;
   return { seen: w.seen, received: w.received };
@@ -1298,13 +1429,32 @@ r.post('/requests', (req, res) => {
   const ccResult = setRequestCc(requestId, req.body?.cc, tpl, req.user);
   if (ccResult.error) return res.status(400).json({ error: ccResult.error });
 
-  const approvers = resolveApprovers(first, req.user.id);
-  notifyApprovers(first, approvers, {
-    type: 'workflow',
-    title: `کارتابل: ${tpl.name}`,
-    body: `«${title}» توسط ${req.user.full_name} ثبت شد و در انتظار اقدام شماست (${first.title})`,
-    link: `/cartable/${requestId}`,
-  });
+  if (tpl.parallel_flow) {
+    // کسانی که امروز از کارتِ کارتابل پاسخ داده‌اند، دوباره پرسیده نشوند: پاسخشان همین‌جا اعمال می‌شود
+    const today = db.prepare(`SELECT c.*, u.full_name FROM workflow_checkins c JOIN users u ON u.id = c.user_id
+      WHERE c.template_id = ? AND c.day = ? AND c.responded_at IS NOT NULL AND c.request_id IS NULL`).all(tpl.id, tehranNow().date);
+    for (const c of today) {
+      const fresh = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(requestId);
+      if (fresh.status !== 'in_progress' || !myParallelSteps(fresh, c.user_id).length) continue;
+      actParallel(fresh, tpl, { id: c.user_id, full_name: c.full_name },
+        { option_key: c.option_key, comment: c.comment, sign: !!c.signed });
+      db.prepare('UPDATE workflow_checkins SET request_id = ? WHERE id = ?').run(requestId, c.id);
+    }
+    notifyAllParallel({ id: requestId, template_id: tpl.id, requester_id: req.user.id }, {
+      type: 'workflow',
+      title: `کارتابل: ${tpl.name}`,
+      body: `«${title}» توسط ${req.user.full_name} ثبت شد و منتظر پاسخ شماست`,
+      link: `/cartable/${requestId}`,
+    });
+  } else {
+    const approvers = resolveApprovers(first, req.user.id);
+    notifyApprovers(first, approvers, {
+      type: 'workflow',
+      title: `کارتابل: ${tpl.name}`,
+      body: `«${title}» توسط ${req.user.full_name} ثبت شد و در انتظار اقدام شماست (${first.title})`,
+      link: `/cartable/${requestId}`,
+    });
+  }
   notifyCc(requestId, tpl, title, req.user);
 
   // [هشدار مسئولِ گمشده] اگر مرحله‌ای مسئولِ واقعی ندارد، هم به کاربر بگو هم به مدیران
@@ -1340,6 +1490,7 @@ r.get('/requests/inbox', (req, res) => {
     WHERE r.status IN ('in_progress', 'awaiting_requester', 'returned') ORDER BY r.id DESC`).all();
   const inbox = open.filter(rq => {
     if (rq.status !== 'in_progress') return rq.requester_id === req.user.id;
+    if (isParallel(rq)) return myParallelSteps(rq, req.user.id).length > 0;
     const step = currentStepOf(rq);
     return step && resolveApprovers(step, rq.requester_id).includes(req.user.id);
   });
@@ -1362,14 +1513,19 @@ r.get('/requests/inbox', (req, res) => {
   }
   const result = inbox.map(rq => {
     // [تایید سریع] اگر من مسئولِ مرحلهٔ فعلی‌ام، از همین کارتابل می‌توانم تایید (و امضا) کنم
-    const cur = rq.status === 'in_progress' && have.has(rq.id) ? currentStepOf(rq) : null;
-    const mine = !!cur && resolveApprovers(cur, rq.requester_id).includes(req.user.id);
+    const par = rq.status === 'in_progress' && have.has(rq.id) && isParallel(rq);
+    const cur = rq.status === 'in_progress' && have.has(rq.id) && !par ? currentStepOf(rq) : null;
+    const mine = par || (!!cur && resolveApprovers(cur, rq.requester_id).includes(req.user.id));
     return {
     ...rq,
     can_quick_approve: mine,
-    step_requires_signature: mine ? (cur.requires_signature === 0 ? 0 : 1) : 0,
+    // [گردش موازی] پاسخ با گزینه‌ها (رخ داد/رخ نداد) و بدون امضا
+    parallel: par ? 1 : 0,
+    quick_options: par ? quickOptionsOfTemplate(rq.template_id) : [],
+    step_requires_signature: !par && mine ? (cur.requires_signature === 0 ? 0 : 1) : 0,
     open_questions: qCount.get(rq.id) || 0,
     step_title: !have.has(rq.id) ? 'پاسخ به پرسش'
+      : par ? 'پاسخ شما'
       : rq.status === 'in_progress' ? currentStepOf(rq)?.title
       : rq.status === 'awaiting_requester' ? 'تایید نهایی شما' : 'اصلاح و ارسال مجدد',
     attachments_count: attachmentCount(rq),
@@ -1586,6 +1742,29 @@ r.post('/requests/:id/action', (req, res) => {
   // مرحلهٔ «تایید نهاییِ درخواست‌دهنده»: سلسله‌مراتب تمام شده و توپ در زمینِ خودِ درخواست‌دهنده است
   const finalStage = rq.status === 'awaiting_requester';
   const step = finalStage ? null : currentStepOf(rq);
+
+  // ---------- [گردش موازی] هر نفر یک پاسخ، بدون ترتیب ----------
+  if (!finalStage && tpl.parallel_flow) {
+    if (!['approve', 'reject'].includes(action)) return res.status(400).json({ error: 'در این فرآیند فقط پاسخ یا رد ممکن است' });
+    if (!myParallelSteps(rq, req.user.id).length) return res.status(403).json({ error: 'پاسخ شما قبلاً ثبت شده یا مسئول این درخواست نیستید' });
+    if (attIds.length && !canAttach(tpl, null)) return res.status(400).json({ error: 'پیوست فایل در این مرحله مجاز نیست' });
+    if (action === 'approve') {
+      const out = actParallel(rq, tpl, req.user, { option_key: req.body?.option_key, comment, sign: !!req.body?.sign, attIds });
+      if (out.error) return res.status(400).json({ error: out.error });
+      return res.json({ ok: true, ...out });
+    }
+    // رد: کلِ درخواست بسته می‌شود
+    db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(rq.id, myParallelSteps(rq, req.user.id)[0].step_order, req.user.id, 'reject', comment, JSON.stringify(attIds));
+    db.prepare("UPDATE workflow_requests SET status = 'rejected', closed_at = datetime('now') WHERE id = ?").run(rq.id);
+    notifyOwner(rq, tpl.id, req.user.id, { final: true, title: `❌ درخواست رد شد: ${tpl.name}`,
+      body: `«${rq.title}» توسط ${req.user.full_name} رد شد${comment ? ' — ' + comment : ''}` });
+    if (rq.requester_id !== req.user.id) {
+      notifyUsers([rq.requester_id], { type: 'workflow', title: `درخواست رد شد: ${tpl.name}`,
+        body: `«${rq.title}» توسط ${req.user.full_name} رد شد${comment ? ' — ' + comment : ''}`, link: `/cartable/${rq.id}` });
+    }
+    return res.json({ ok: true, status: 'rejected' });
+  }
 
   // ---------- چه کسی مجاز به اقدام است؟ ----------
   if (finalStage) {
@@ -1937,12 +2116,18 @@ r.post('/requests/:id/resubmit', (req, res) => {
     last_reminded_at = NULL, closed_at = NULL WHERE id = ?`).run(target.step_order, stepDueAt(target), rq.id);
   db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, ?, ?, ?, ?)')
     .run(rq.id, target.step_order, req.user.id, 'submit', `ارسال مجدد پس از اصلاح — به مرحلهٔ «${target.title}»`);
+  if (tpl?.parallel_flow) {
+    notifyAllParallel(rq, { type: 'workflow', title: `کارتابل: ${tpl.name}`,
+      body: `«${rq.title}» پس از اصلاح توسط ${req.user.full_name} دوباره ارسال شد و منتظر پاسخ شماست`,
+      link: `/cartable/${rq.id}` }, req.user.id);
+  } else {
   notifyApprovers(target, resolveApprovers(target, rq.requester_id), {
     type: 'workflow',
     title: `کارتابل: ${tpl?.name || ''}`,
     body: `«${rq.title}» پس از اصلاح توسط ${req.user.full_name} دوباره ارسال شد و در انتظار اقدام شماست (${target.title})`,
     link: `/cartable/${rq.id}`,
   });
+  }
   res.json({ ok: true, current_step: target.step_order });
 });
 
@@ -2035,6 +2220,16 @@ r.post('/checkins', (req, res) => {
   const prev = db.prepare('SELECT responded_at FROM workflow_checkins WHERE template_id = ? AND user_id = ? AND day = ?')
     .get(t.id, req.user.id, now.date);
   if (prev?.responded_at) return res.status(400).json({ error: 'پاسخِ امروزِ شما قبلاً ثبت شده است' });
+  // [گردش موازی] اگر درخواستِ بازی از همین فرآیند منتظرِ پاسخِ اوست، همین پاسخ همان‌جا ثبت می‌شود (یک بار، نه دو بار)
+  if (t.parallel_flow) {
+    const open = db.prepare("SELECT * FROM workflow_requests WHERE template_id = ? AND status = 'in_progress' ORDER BY id DESC").all(t.id)
+      .find(rq => myParallelSteps(rq, req.user.id).length);
+    if (open) {
+      const out = actParallel(open, t, req.user, { option_key, comment, sign: !!sign });
+      if (out.error) return res.status(400).json({ error: out.error });
+      return res.json({ ok: true, request_id: open.id, ...out });
+    }
+  }
   const signed = !!sign && t.requester_signature !== 0 && !!db.prepare(
     "SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(req.user.id);
   db.prepare(`INSERT INTO workflow_checkins (template_id, user_id, day, seen_at, responded_at, option_key, option_label, comment, signed, request_id)

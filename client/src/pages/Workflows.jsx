@@ -288,6 +288,8 @@ function TemplateModal({ tpl, onClose, onDone }) {
   const [quickOpts, setQuickOpts] = useState(() => {
     try { const v = JSON.parse(tpl?.quick_options || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
   });
+  // [گردش موازی] بدون ترتیب: همه هم‌زمان و هر نفر یک بار پاسخ می‌دهد
+  const [parallel, setParallel] = useState(!!tpl?.parallel_flow);
   const setQO = (i, patch) => setQuickOpts(l => l.map((o, j) => j === i ? { ...o, ...patch } : o));
   const [notifyFinal, setNotifyFinal] = useState(tpl ? tpl.notify_requester_on_final !== 0 : true);
   const [requesterSig, setRequesterSig] = useState(tpl ? tpl.requester_signature !== 0 : true);
@@ -363,6 +365,7 @@ function TemplateModal({ tpl, onClose, onDone }) {
         notify_requester_on_final: notifyFinal, requester_signature: requesterSig,
         daily_reminder: daily,
         quick_options: quickOpts.filter(o => o.label?.trim()),
+        parallel_flow: parallel ? 1 : 0,
         owner_user_id: ownerIsCreator ? (creatorId || null) : (ownerId || null), owner_notify: ownerNotify,
         owner_is_creator: ownerIsCreator ? 1 : 0,
         ...(tpl && canChangeCreator && creatorId !== tpl.created_by ? { created_by: creatorId } : {}),
@@ -925,6 +928,20 @@ function TemplateModal({ tpl, onClose, onDone }) {
             )}
           </div>
         )}
+      </div>
+
+      {/* [گردش موازی] ترتیب مراحل */}
+      <div className="card-pad panel-soft" style={{ marginTop: 6, marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <b style={{ flex: 1 }}>ترتیب گردش</b>
+          <Segmented size="sm" value={parallel ? 1 : 0} onChange={v => setParallel(!!v)}
+            options={[{ value: 0, label: 'به ترتیب مراحل' }, { value: 1, label: 'بدون ترتیب (هم‌زمان)', tone: 'primary' }]} />
+        </div>
+        <div style={{ fontSize: 11.8, color: 'var(--text-3)', marginTop: 4, lineHeight: 1.8 }}>
+          {parallel
+            ? 'درخواست هم‌زمان برای همهٔ مسئولانِ مراحل می‌رود و هر نفر فقط یک بار پاسخ می‌دهد (اگر ماژول تعریف شده باشد، با همان گزینه‌ها مثل رخ داد / رخ نداد و بدون امضای جداگانه). وقتی همه پاسخ دادند، درخواست بسته می‌شود.'
+            : 'هر مرحله پس از تاییدِ مرحلهٔ قبل فعال می‌شود.'}
+        </div>
       </div>
 
       {/* [ماژول‌های کارتابل] دکمه‌های سریع برای پاسخِ روزانه */}

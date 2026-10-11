@@ -35,6 +35,7 @@ export default function RequestDetail() {
   const [req, setReq] = useState(null);
   const [confirm, setConfirm] = useState(null); // 'approve' | 'reject' | 'skip'
   const [comment, setComment] = useState('');
+  const [opt, setOpt] = useState(null); // [گردش موازی] گزینهٔ انتخاب‌شده (رخ داد / رخ نداد)
   const [actionFiles, setActionFiles] = useState([]); // [پیوست‌ها] فایل‌های پیوستِ اقدام
   const [note, setNote] = useState(null); // {comment, attachments} — یادداشت/پیوست بدون تغییر مرحله
   // با کلیک روی یک گرهٔ نمودار، تاریخچه روی همان مرحله فیلتر می‌شود
@@ -70,11 +71,12 @@ export default function RequestDetail() {
   const act = async () => {
     setBusy(true);
     try {
-      await api(`/workflows/requests/${req.id}/action`, { method: 'POST', body: { action: confirm, comment, attachments: actionFiles, sign: confirm === 'approve' && sign } });
-      setConfirm(null); setComment(''); setActionFiles([]); setSign(false);
+      await api(`/workflows/requests/${req.id}/action`, { method: 'POST', body: { action: confirm, comment, attachments: actionFiles, sign: confirm === 'approve' && sign, option_key: opt?.key } });
+      setConfirm(null); setComment(''); setActionFiles([]); setSign(false); setOpt(null);
       await load();
       refreshBadges();
       toast(confirm !== 'approve' ? (confirm === 'skip' ? 'بدون اظهارنظر عبور داده شد' : 'درخواست رد شد')
+        : req.parallel ? `پاسخ شما${opt ? ` «${opt.label}»` : ''} ثبت شد`
         : req.can_final ? 'درخواست با تایید نهایی شما بسته شد'
         : 'تایید شد و به مرحله بعد رفت');
     } catch (e) { toast(e.message, 'error'); }
@@ -527,10 +529,24 @@ export default function RequestDetail() {
 
           {req.can_act && (
             <div className="card card-pad" style={{ border: '1.5px solid var(--primary)', background: 'var(--primary-soft)' }}>
-              <b style={{ display: 'block', marginBottom: 6 }}>این درخواست در انتظار اقدام شماست</b>
+              <b style={{ display: 'block', marginBottom: 6 }}>{req.parallel ? 'این درخواست منتظر پاسخ شماست' : 'این درخواست در انتظار اقدام شماست'}</b>
+              {req.parallel ? (
+                <p style={{ fontSize: 12.8, color: 'var(--text-2)', marginBottom: 12 }}>
+                  یک بار پاسخ دهید؛ ترتیبی در کار نیست و پاسخ شما مستقیم به مسئول پیگیری می‌رسد.
+                </p>
+              ) : (
               <p style={{ fontSize: 12.8, color: 'var(--text-2)', marginBottom: 12 }}>
                 مرحله فعلی: {req.steps.find(s => s.step_order === req.current_step)?.title}
               </p>
+              )}
+              {req.parallel && req.quick_options?.length > 0 ? (
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  {req.quick_options.map(o => (
+                    <button key={o.key} className="btn btn-primary" style={{ flex: 1 }}
+                      onClick={() => { setOpt(o); setConfirm('approve'); }}><Check size={16} /> {o.label}</button>
+                  ))}
+                </div>
+              ) : (
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => setConfirm('approve')}><Check size={16} /> تایید</button>
                 <button className="btn btn-danger" style={{ flex: 1 }} onClick={() => setConfirm('reject')}><X size={16} /> رد</button>
@@ -547,6 +563,7 @@ export default function RequestDetail() {
                   </button>
                 )}
               </div>
+              )}
             </div>
           )}
 
@@ -702,15 +719,18 @@ export default function RequestDetail() {
       )}
 
       {confirm && (
-        <Modal title={confirm === 'approve' ? 'تایید درخواست' : confirm === 'skip' ? 'عبور از مرحله' : 'رد درخواست'}
-          onClose={() => { setConfirm(null); setActionFiles([]); setSign(false); }}
+        <Modal title={confirm === 'approve' ? (opt ? `پاسخ: ${opt.label}` : req.parallel ? 'ثبت پاسخ' : 'تایید درخواست') : confirm === 'skip' ? 'عبور از مرحله' : 'رد درخواست'}
+          onClose={() => { setConfirm(null); setActionFiles([]); setSign(false); setOpt(null); }}
           footer={<>
-            <button className="btn btn-ghost" onClick={() => { setConfirm(null); setActionFiles([]); setSign(false); }}>انصراف</button>
+            <button className="btn btn-ghost" onClick={() => { setConfirm(null); setActionFiles([]); setSign(false); setOpt(null); }}>انصراف</button>
             <button className={`btn ${confirm === 'reject' ? 'btn-danger' : 'btn-primary'}`} onClick={act} disabled={busy}>
-              {confirm === 'approve' ? 'تایید نهایی' : confirm === 'skip' ? 'عبور از این مرحله' : 'رد درخواست'}
+              {confirm === 'approve' ? (req.parallel ? 'ثبت پاسخ' : 'تایید نهایی') : confirm === 'skip' ? 'عبور از این مرحله' : 'رد درخواست'}
             </button>
           </>}>
-          {confirm === 'approve' && !req.can_final
+          {confirm === 'approve' && opt && (
+            <p style={{ fontSize: 13, marginTop: 0 }}>پاسخ شما: <b>{opt.label}</b></p>
+          )}
+          {confirm === 'approve' && !req.can_final && !req.parallel
             && req.steps.find(st => st.step_order === req.current_step)?.requires_signature !== 0 && (
             <Field label="امضای شما"><MySignature signed={sign} onChange={setSign} /></Field>
           )}
