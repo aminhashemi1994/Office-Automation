@@ -168,7 +168,7 @@ function userContext(user) {
   `).get({ uid: user.id });
   const dept = user.department_id
     ? db.prepare('SELECT name FROM departments WHERE id = ?').get(user.department_id)?.name : null;
-  const roleFa = user.role === 'admin' ? 'مدیر سامانه' : user.role === 'manager' ? 'سرگروه/مدیر واحد' : 'کارمند';
+  const roleFa = user.role === 'admin' ? 'مدیر سامانه' : user.role === 'manager' ? 'سرگروه' : user.role === 'director' ? 'مدیر واحد' : 'کارمند';
   const canBuild = canBuildWorkflows(user);
   return `کاربرِ پرسنده: ${user.full_name} — نقش: ${roleFa}${dept ? ` — واحد: ${dept}` : ''}.
 دسترسیِ او به تعریف/ویرایش فرآیند: ${canBuild ? 'دارد' : 'ندارد — اگر خواست فرآیند بسازد، بی‌درنگ بگو اجازه‌اش را ندارد و باید از مدیر واحد یا مدیر سامانه بخواهد؛ پیش‌نویس نساز'}.

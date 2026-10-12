@@ -58,7 +58,7 @@ function canSeeTask(user, t) {
 // چه کسی می‌تواند مشارکت‌کننده اضافه/کم کند: واگذارکننده، مدیر سامانه، یا سرگروه/مدیرِ واحد
 function canManageParticipants(user, t) {
   if (t.assigner_id === user.id || user.role === 'admin') return true;
-  if (user.role === 'manager' || db.prepare('SELECT 1 FROM departments WHERE manager_id = ?').get(user.id)) return true;
+  if ((user.role === 'manager' || user.role === 'director') || db.prepare('SELECT 1 FROM departments WHERE manager_id = ?').get(user.id)) return true;
   return false;
 }
 // دسته‌بندی معتبر است و کاربر به آن دسترسی دارد؟ (null یعنی بی‌دسته)
@@ -176,7 +176,7 @@ export function canAssignTo(assigner, assigneeId) {
   const assignee = db.prepare('SELECT * FROM users WHERE id = ? AND is_active = 1').get(assigneeId);
   if (!assignee || assignee.department_id == null) return false;
   const allowed = new Set(db.prepare('SELECT id FROM departments WHERE manager_id = ?').all(assigner.id).map(d => d.id));
-  if ((assigner.role === 'manager' || allowed.size || hasPerm(assigner, 'tasks.assign')) && assigner.department_id) {
+  if (((assigner.role === 'manager' || assigner.role === 'director') || allowed.size || hasPerm(assigner, 'tasks.assign')) && assigner.department_id) {
     allowed.add(assigner.department_id);
   }
   return allowed.has(assignee.department_id);

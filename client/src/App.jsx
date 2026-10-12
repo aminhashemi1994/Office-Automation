@@ -328,11 +328,11 @@ function Layout({ children }) {
 
   // چه کسی فرآیند می‌سازد: مدیر سامانه، سرگروه/مدیر واحد، اعضای واحد مدیریت
   const myDept = departments.find(d => d.id === user.department_id);
-  const canBuildWorkflows = hasPerm('workflows.manage') || user.role === 'manager'
+  const canBuildWorkflows = hasPerm('workflows.manage') || (user.role === 'manager' || user.role === 'director')
     || departments.some(d => d.manager_id === user.id) || !!myDept?.is_management;
   const canViewReports = canBuildWorkflows || hasPerm('reports.view');
   // بخش ضبط‌ها فقط برای مدیر سامانه و سرگروه‌ها/مدیران واحدها
-  const canViewRecordings = user.role === 'admin' || user.role === 'manager'
+  const canViewRecordings = user.role === 'admin' || (user.role === 'manager' || user.role === 'director')
     || departments.some(d => d.manager_id === user.id);
   // [CRM] مدیر سامانه و واحد مدیریت همیشه؛ بقیه فقط اگر واحدشان در تنظیمات سازمان مجاز شده باشد
   const crmDeptIds = (() => {

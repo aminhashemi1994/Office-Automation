@@ -47,7 +47,7 @@ export default function Cartable() {
 
   const myDept = departments.find(d => d.id === user.department_id);
   // مدیرِ حداقل یک واحد (مدل چندمدیره) یا مدیر سامانه/واحد مدیریت → دسترسی به «همه درخواست‌ها»
-  const canBuild = hasPerm('workflows.manage') || user.role === 'manager'
+  const canBuild = hasPerm('workflows.manage') || (user.role === 'manager' || user.role === 'director')
     || departments.some(d => d.manager_id === user.id || (d.managers || []).some(m => m.id === user.id))
     || !!myDept?.is_management;
 

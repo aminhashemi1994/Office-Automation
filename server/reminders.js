@@ -1,12 +1,45 @@
 import db from './db.js';
 import { notifyUser, notifyUsers } from './notify.js';
-import { resolveApprovers, currentStepOfRequest, dailyRecipients, tehranNow, pendingApproversOf } from './routes/workflows.js';
+import { resolveApprovers, currentStepOfRequest, dailyRecipients, tehranNow, pendingApproversOf, ensureDailyRequest } from './routes/workflows.js';
 import { flushQueue } from './sms.js';
+import { deptHeads, deptDirectors } from './acl.js';
 import { notifyAudience } from './routes/announcements.js';
 
 const HOUR = 3600 * 1000;
 
-function checkWorkflowDeadlines() {
+// [نبودِ مدیر] اگر مرحله‌ای که منتظرِ «مدیرِ واحد» است از مهلت بگذرد، سرگروهِ همان واحد
+// خودکار و موقت (۲۴ ساعت) جانشینِ مدیر می‌شود: درخواست در کارتابلش می‌آید و می‌تواند به نیابت اقدام کند.
+function escalateToHeads(rq, step) {
+  const specs = [{ approver_type: step.approver_type, approver_id: step.approver_id }];
+  try { for (const a of JSON.parse(step.alt_approvers || '[]')) if (a?.approver_type) specs.push(a); } catch {}
+  const depts = new Set();
+  for (const s of specs) {
+    if (s.approver_type === 'dept_director' && s.approver_id) depts.add(Number(s.approver_id));
+    if (s.approver_type === 'requester_director') {
+      const d = db.prepare('SELECT department_id FROM users WHERE id = ?').get(rq.requester_id)?.department_id;
+      if (d) depts.add(d);
+    }
+  }
+  const until = new Date(Date.now() + 24 * HOUR).toISOString();
+  for (const d of depts) {
+    const heads = deptHeads(d);
+    for (const dir of deptDirectors(d)) {
+      for (const h of heads) {
+        if (h === dir) continue;
+        const has = db.prepare(`SELECT 1 FROM delegations WHERE from_user = ? AND to_user = ? AND is_active = 1
+          AND (ends_at IS NULL OR ends_at = '' OR ends_at > ?)`).get(dir, h, new Date().toISOString());
+        if (has) continue;
+        db.prepare(`INSERT INTO delegations (from_user, to_user, reason, ends_at) VALUES (?, ?, ?, ?)`)
+          .run(dir, h, `خودکار: مدیر در مهلتِ «${rq.title}» اقدام نکرد`, until);
+        notifyUsers([h], { type: 'workflow', title: `جانشینیِ موقتِ مدیر: ${rq.template_name}`,
+          body: `مدیرِ واحد در مهلت به «${rq.title}» رسیدگی نکرد؛ تا ۲۴ ساعت می‌توانید به نیابت از او اقدام کنید`,
+          link: `/cartable/${rq.id}` });
+      }
+    }
+  }
+}
+
+export function checkWorkflowDeadlines() {
   const now = Date.now();
   const open = db.prepare(`
     SELECT r.*, t.name AS template_name FROM workflow_requests r
@@ -28,6 +61,7 @@ function checkWorkflowDeadlines() {
         continue;
       }
       const approvers = resolveApprovers(step, rq.requester_id);
+      if (overdue) escalateToHeads(rq, step);
       notifyUsers(approvers, {
         type: 'reminder',
         title: overdue ? `⏰ مهلت گذشته: ${rq.template_name}` : `⏰ یادآوری مهلت: ${rq.template_name}`,
@@ -134,17 +168,21 @@ export function checkDailyWorkflowReminders() {
     db.prepare('UPDATE workflow_templates SET reminder_last_sent = ? WHERE id = ?').run(now.date, t.id);
     try {
       const ids = dailyRecipients(cfg);
+      // [درخواستِ روزانه] درخواستِ امروز ساخته می‌شود تا هر روز جدا در «پیگیری فرآیندها» دیده شود
+      const daily = ensureDailyRequest(t);
       if (ids.size) {
         notifyUsers([...ids], {
           type: 'reminder',
           title: `🔔 یادآوری روزانه: ${t.name}`,
           body: `«${t.name}» امروز باید ثبت و تایید شود`,
-          link: '/cartable',
+          link: daily ? `/cartable/${daily.id}` : '/cartable',
         });
       }
       // مسئولانِ مرحلهٔ فعلیِ درخواست‌های بازِ همین فرآیند
       if (cfg.approvers !== 0) {
-        const open = db.prepare("SELECT * FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").all(t.id);
+        // فرآیندِ روزانه: فقط درخواستِ امروز (درخواست‌های روزهای قبل هر روز دوباره یادآوری نمی‌شوند)
+        const open = daily ? [daily]
+          : db.prepare("SELECT * FROM workflow_requests WHERE template_id = ? AND status = 'in_progress'").all(t.id);
         for (const rq of open) {
           // [گردش موازی] همهٔ کسانی که هنوز پاسخ نداده‌اند
           if (t.parallel_flow) {

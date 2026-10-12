@@ -216,7 +216,7 @@ export default function RequestDetail() {
     } catch (e) { toast(e.message, 'error'); setBusy(false); }
   };
 
-  const canMakeTask = (hasPerm('workflows.manage') || user.role === 'manager' || req.requester_id === user.id) && !req.task_id;
+  const canMakeTask = (hasPerm('workflows.manage') || (user.role === 'manager' || user.role === 'director') || req.requester_id === user.id) && !req.task_id;
   const submitMakeTask = async () => {
     setBusy(true);
     try {

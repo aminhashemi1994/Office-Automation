@@ -35,6 +35,7 @@ export function deptPositionHolders(deptId, position) {
     // «مدیرِ اصلیِ واحد» در جدول departments هم همان مدیر است
     const dept = db.prepare('SELECT manager_id FROM departments WHERE id = ?').get(deptId);
     if (dept?.manager_id) ids.add(dept.manager_id);
+    for (const row of db.prepare("SELECT id FROM users WHERE department_id = ? AND role = 'director' AND is_active = 1").all(deptId)) ids.add(row.id);
   }
   if (position === 'head') {
     // سازگاری با گذشته: کاربرِ نقش‌دارِ manager در یک واحد، سرگروهِ همان واحد است
@@ -95,7 +96,7 @@ export function getManagedDeptIds(user) {
   for (const row of db.prepare('SELECT id FROM departments WHERE manager_id = ?').all(user.id)) ids.add(row.id);
   for (const row of db.prepare('SELECT department_id FROM department_managers WHERE user_id = ?').all(user.id)) ids.add(row.department_id);
   // کاربرِ نقش‌دارِ manager، مدیرِ واحدِ خودش هم حساب می‌شود
-  if (user.role === 'manager' && user.department_id) ids.add(user.department_id);
+  if ((user.role === 'manager' || user.role === 'director') && user.department_id) ids.add(user.department_id);
   return [...ids];
 }
 

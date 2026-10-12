@@ -228,7 +228,7 @@ export function canViewRequest(user, rq) {
 // مدیر سامانه، دارندگان workflows.manage، سرگروه‌ها/مدیران واحدها و اعضای واحد مدیریت
 export function canBuildWorkflows(user) {
   if (hasPerm(user, 'workflows.manage')) return true;
-  if (user.role === 'manager') return true;
+  if ((user.role === 'manager' || user.role === 'director')) return true;
   if (getManagedDeptIds(user).length) return true; // مدیرِ حداقل یک واحد
   if (isManagementMember(user)) return true;
   return false;
@@ -302,7 +302,9 @@ function resolveSpec(spec, requester, requesterId) {
       .map(u => u.id).filter(id => id !== requesterId);
   }
   if (spec.approver_type === 'role' && spec.approver_role) {
-    return db.prepare('SELECT id FROM users WHERE role = ? AND is_active = 1').all(spec.approver_role).map(u => u.id);
+    // «سرگروه‌ها/مدیران» شاملِ نقشِ «مدیر واحد» هم هست
+    const roles = spec.approver_role === 'manager' ? ['manager', 'director'] : [spec.approver_role];
+    return db.prepare(`SELECT id FROM users WHERE role IN (${roles.map(() => '?').join(',')}) AND is_active = 1`).all(...roles).map(u => u.id);
   }
   return [];
 }
@@ -368,7 +370,7 @@ function specResolvableEmpty(spec) {
   }
   // «سرگروه/مدیرِ واحدِ درخواست‌دهنده» فقط وقتی قطعاً خراب است که هیچ واحدی آن سِمَت را نداشته باشد
   if (t === 'requester_head') return db.prepare("SELECT COUNT(*) c FROM department_managers WHERE position = 'head'").get().c === 0
-    && db.prepare("SELECT COUNT(*) c FROM users WHERE role = 'manager' AND is_active = 1 AND department_id IS NOT NULL").get().c === 0;
+    && db.prepare("SELECT COUNT(*) c FROM users WHERE role IN ('manager', 'director') AND is_active = 1 AND department_id IS NOT NULL").get().c === 0;
   if (t === 'requester_director') return db.prepare("SELECT COUNT(*) c FROM department_managers WHERE position = 'director'").get().c === 0
     && db.prepare('SELECT COUNT(*) c FROM departments WHERE manager_id IS NOT NULL').get().c === 0;
   if (t === 'requester_manager') return specResolvableEmpty({ approver_type: 'requester_head' })
@@ -557,6 +559,16 @@ function parallelRequired(rq) {
       need.get(id).push(s);
     }
   }
+  // [درخواستِ روزانه] همهٔ گیرندگانِ یادآوری روزانه هم باید پاسخ بدهند (همان کسانی که کارتِ روزانه دارند)
+  const day = rq.daily_day ?? db.prepare('SELECT daily_day FROM workflow_requests WHERE id = ?').get(rq.id)?.daily_day;
+  if (day) {
+    const t = db.prepare('SELECT daily_reminder FROM workflow_templates WHERE id = ?').get(rq.template_id);
+    let cfg = null; try { cfg = JSON.parse(t?.daily_reminder || ''); } catch {}
+    if (cfg?.enabled) {
+      const first = requestSteps(rq)[0] || { step_order: 1, title: 'پاسخ روزانه' };
+      for (const id of dailyRecipients(cfg)) if (id !== rq.requester_id && !need.has(id)) need.set(id, [first]);
+    }
+  }
   return need;
 }
 // Map<userId, action> — پاسخ‌های این دور
@@ -610,6 +622,42 @@ function notifyAllParallel(rq, payload, exceptId) {
   const ids = pendingApproversOf(rq).filter(id => id !== exceptId);
   if (ids.length) notifyUsers(ids, payload);
 }
+// کسانی که امروز از کارتِ کارتابل پاسخ داده‌اند، دوباره پرسیده نشوند: پاسخشان در این درخواست اعمال می‌شود
+function applyTodayCheckins(requestId, tpl) {
+  const today = db.prepare(`SELECT c.*, u.full_name FROM workflow_checkins c JOIN users u ON u.id = c.user_id
+    WHERE c.template_id = ? AND c.day = ? AND c.responded_at IS NOT NULL AND c.request_id IS NULL`).all(tpl.id, tehranNow().date);
+  for (const c of today) {
+    const fresh = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(requestId);
+    if (fresh.status !== 'in_progress' || !myParallelSteps(fresh, c.user_id).length) continue;
+    actParallel(fresh, tpl, { id: c.user_id, full_name: c.full_name },
+      { option_key: c.option_key, comment: c.comment, sign: !!c.signed });
+    db.prepare('UPDATE workflow_checkins SET request_id = ? WHERE id = ?').run(requestId, c.id);
+  }
+}
+
+// [درخواستِ روزانه] درخواستِ امروزِ یک فرآیندِ روزانهٔ موازی؛ اگر نیست ساخته می‌شود.
+// به نامِ مسئولِ پیگیری (یا سازنده) ثبت می‌شود تا هر روز در «پیگیری فرآیندها» با نمودار و چاپ دیده شود.
+export function ensureDailyRequest(t) {
+  if (!t?.parallel_flow) return null;
+  let cfg = null; try { cfg = JSON.parse(t.daily_reminder || ''); } catch {}
+  if (!cfg?.enabled) return null;
+  const day = tehranNow().date;
+  const existing = db.prepare('SELECT * FROM workflow_requests WHERE template_id = ? AND daily_day = ? ORDER BY id LIMIT 1').get(t.id, day);
+  if (existing) return existing;
+  const requesterId = t.owner_user_id || t.created_by;
+  if (!requesterId) return null;
+  const steps = getSteps(t.id);
+  if (!steps.length) return null;
+  const faDate = new Intl.DateTimeFormat('fa-IR-u-ca-persian', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Tehran' }).format(new Date());
+  const info = db.prepare(`INSERT INTO workflow_requests (template_id, requester_id, title, form_data, step_due_at, attachments, daily_day, requester_signed)
+    VALUES (?, ?, ?, '{}', ?, '[]', ?, 0)`).run(t.id, requesterId, `${t.name} — ${faDate}`, stepDueAt(steps[0]), day);
+  const id = Number(info.lastInsertRowid);
+  db.prepare("INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, 0, ?, 'submit', ?)")
+    .run(id, requesterId, 'ثبتِ خودکارِ درخواستِ روزانه');
+  applyTodayCheckins(id, t);
+  return db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(id);
+}
+
 function quickOptionsOfTemplate(templateId) {
   try { const v = JSON.parse(db.prepare('SELECT quick_options FROM workflow_templates WHERE id = ?').get(templateId)?.quick_options || '[]'); return Array.isArray(v) ? v : []; }
   catch { return []; }
@@ -1450,16 +1498,7 @@ r.post('/requests', (req, res) => {
   if (ccResult.error) return res.status(400).json({ error: ccResult.error });
 
   if (tpl.parallel_flow) {
-    // کسانی که امروز از کارتِ کارتابل پاسخ داده‌اند، دوباره پرسیده نشوند: پاسخشان همین‌جا اعمال می‌شود
-    const today = db.prepare(`SELECT c.*, u.full_name FROM workflow_checkins c JOIN users u ON u.id = c.user_id
-      WHERE c.template_id = ? AND c.day = ? AND c.responded_at IS NOT NULL AND c.request_id IS NULL`).all(tpl.id, tehranNow().date);
-    for (const c of today) {
-      const fresh = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(requestId);
-      if (fresh.status !== 'in_progress' || !myParallelSteps(fresh, c.user_id).length) continue;
-      actParallel(fresh, tpl, { id: c.user_id, full_name: c.full_name },
-        { option_key: c.option_key, comment: c.comment, sign: !!c.signed });
-      db.prepare('UPDATE workflow_checkins SET request_id = ? WHERE id = ?').run(requestId, c.id);
-    }
+    applyTodayCheckins(requestId, tpl);
     notifyAllParallel({ id: requestId, template_id: tpl.id, requester_id: req.user.id }, {
       type: 'workflow',
       title: `کارتابل: ${tpl.name}`,
@@ -1508,9 +1547,14 @@ r.get('/requests/inbox', (req, res) => {
     JOIN workflow_templates t ON t.id = r.template_id
     JOIN users u ON u.id = r.requester_id
     WHERE r.status IN ('in_progress', 'awaiting_requester', 'returned') ORDER BY r.id DESC`).all();
+  const today = tehranNow().date;
   const inbox = open.filter(rq => {
     if (rq.status !== 'in_progress') return rq.requester_id === req.user.id;
-    if (isParallel(rq)) return myParallelSteps(rq, req.user.id).length > 0;
+    if (isParallel(rq)) {
+      // درخواستِ روزانهٔ روزهای قبل دیگر در کارتابلِ پاسخ‌دهندگان نمی‌ماند (در «پیگیری» دیده می‌شود)
+      if (rq.daily_day && rq.daily_day !== today) return false;
+      return myParallelSteps(rq, req.user.id).length > 0;
+    }
     const step = currentStepOf(rq);
     return step && resolveApprovers(step, rq.requester_id).includes(req.user.id);
   });
@@ -2249,8 +2293,12 @@ r.post('/checkins', (req, res) => {
   if (prev?.responded_at) return res.status(400).json({ error: 'پاسخِ امروزِ شما قبلاً ثبت شده است' });
   // [گردش موازی] اگر درخواستِ بازی از همین فرآیند منتظرِ پاسخِ اوست، همین پاسخ همان‌جا ثبت می‌شود (یک بار، نه دو بار)
   if (t.parallel_flow) {
-    const open = db.prepare("SELECT * FROM workflow_requests WHERE template_id = ? AND status = 'in_progress' ORDER BY id DESC").all(t.id)
-      .find(rq => myParallelSteps(rq, req.user.id).length);
+    // فرآیندِ روزانه: پاسخِ امروز فقط به درخواستِ امروز می‌رود (نه به درخواستِ روزهای قبل)
+    const daily = ensureDailyRequest(t);
+    const open = daily
+      ? (daily.status === 'in_progress' && myParallelSteps(daily, req.user.id).length ? daily : null)
+      : db.prepare("SELECT * FROM workflow_requests WHERE template_id = ? AND status = 'in_progress' ORDER BY id DESC").all(t.id)
+        .find(rq => myParallelSteps(rq, req.user.id).length);
     if (open) {
       const out = actParallel(open, t, req.user, { option_key, comment, sign: !!sign });
       if (out.error) return res.status(400).json({ error: out.error });

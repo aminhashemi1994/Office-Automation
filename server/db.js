@@ -1312,6 +1312,9 @@ try { db.exec('ALTER TABLE workflow_actions ADD COLUMN signed INTEGER'); } catch
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN on_behalf_id INTEGER'); } catch {}
 // [امضای دستیِ درخواست‌دهنده] ۱ = هنگام ثبت «درج امضا» زده است؛ NULL = درخواست‌های قدیمی (مثل قبل درج می‌شود)
 try { db.exec('ALTER TABLE workflow_requests ADD COLUMN requester_signed INTEGER'); } catch {}
+// [درخواستِ روزانه] برای فرآیندهای روزانهٔ موازی، هر روز یک درخواست ساخته می‌شود (تاریخِ تهران، YYYY-MM-DD)
+try { db.exec('ALTER TABLE workflow_requests ADD COLUMN daily_day TEXT'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_wr_daily ON workflow_requests(template_id, daily_day)'); } catch {}
 // [سازنده/پیگیر] اگر ۱ باشد، مسئول پیگیری همیشه همان سازندهٔ فرآیند است
 try { db.exec('ALTER TABLE workflow_templates ADD COLUMN owner_is_creator INTEGER DEFAULT 0'); } catch {}
 // [گردش موازی] بدون ترتیب: همهٔ مسئولان هم‌زمان درخواست را می‌گیرند و هر نفر فقط یک بار پاسخ می‌دهد

@@ -41,7 +41,7 @@ export function allowedAssignees(user, users, departments, hasPerm) {
   const myDept = departments.find(d => d.id === user.department_id);
   if (user.role === 'admin' || myDept?.is_management) return users.filter(u => u.is_active);
   const managed = departments.filter(d => d.manager_id === user.id).map(d => d.id);
-  const canDept = user.role === 'manager' || managed.length > 0 || hasPerm('tasks.assign');
+  const canDept = (user.role === 'manager' || user.role === 'director') || managed.length > 0 || hasPerm('tasks.assign');
   return users.filter(u => u.is_active && (
     u.id === user.id ||
     (canDept && (managed.includes(u.department_id) || (user.department_id && u.department_id === user.department_id)))
@@ -346,7 +346,7 @@ export default function TaskModal({ task, projects = [], defaultProjectId = null
     api(`/tasks/${task.id}/steps`).then(r => setSteps(r.steps)).catch(() => {});
   }, [task?.id]);
 
-  const canManageParts = user.role === 'admin' || user.role === 'manager'
+  const canManageParts = user.role === 'admin' || (user.role === 'manager' || user.role === 'director')
     || departments.some(d => d.manager_id === user.id)
     || !task || task.assigner_id === user.id;
   const partOptions = users.filter(u => u.is_active && u.id !== assignee && u.id !== user.id && !participants.includes(u.id));

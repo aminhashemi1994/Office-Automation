@@ -175,6 +175,22 @@ function syncManagedDepts(userId, deptIds, roles) {
   for (const { d, p } of list) if (d) ins.run(d, userId, p);
 }
 
+// [نقش ← سِمَت] نقشِ «مدیر واحد» یعنی مدیرِ واحدِ خودش و «سرگروه» یعنی سرگروهِ واحدِ خودش؛
+// «کارمند» در واحدِ خودش سِمَتی ندارد. این‌طور گردش‌کار همیشه می‌داند تایید را به چه کسی بفرستد.
+// (مدیر سامانه دست نمی‌خورد؛ سِمَت در واحدهای دیگر هم از بخشِ «سرگروه یا مدیرِ کدام واحدها» می‌آید.)
+function syncRolePosition(userId) {
+  const u = db.prepare('SELECT id, role, department_id FROM users WHERE id = ?').get(userId);
+  if (!u?.department_id || u.role === 'admin') return;
+  const del = db.prepare('DELETE FROM department_managers WHERE department_id = ? AND user_id = ? AND position = ?');
+  const ins = db.prepare('INSERT OR IGNORE INTO department_managers (department_id, user_id, position) VALUES (?, ?, ?)');
+  if (u.role === 'director') { ins.run(u.department_id, u.id, 'director'); del.run(u.department_id, u.id, 'head'); }
+  else if (u.role === 'manager') { ins.run(u.department_id, u.id, 'head'); del.run(u.department_id, u.id, 'director'); }
+  else { del.run(u.department_id, u.id, 'head'); del.run(u.department_id, u.id, 'director'); }
+  // «مدیرِ اصلیِ» واحد نباید به کسی اشاره کند که دیگر مدیرِ آن نیست
+  const d = db.prepare('SELECT manager_id FROM departments WHERE id = ?').get(u.department_id);
+  if (d?.manager_id === u.id && u.role !== 'director') db.prepare('UPDATE departments SET manager_id = NULL WHERE id = ?').run(u.department_id);
+}
+
 r.post('/users', requirePerm('users.manage'), (req, res) => {
   const { username, password, full_name, role = 'employee', department_id = null, position = '', phone = '', email = '', permissions = [], managed_dept_ids, managed_roles } = req.body || {};
   if (!username || !password || !full_name) return res.status(400).json({ error: 'نام کاربری، رمز عبور و نام کامل الزامی است' });
@@ -191,6 +207,7 @@ r.post('/users', requirePerm('users.manage'), (req, res) => {
     String(username).trim(), bcrypt.hashSync(String(password), 10), full_name, role,
     department_id || null, position, phone, email, color, JSON.stringify(permissions));
   syncManagedDepts(result.lastInsertRowid, managed_dept_ids, managed_roles);
+  syncRolePosition(result.lastInsertRowid);
   res.json({ id: result.lastInsertRowid });
 });
 
@@ -244,6 +261,7 @@ r.put('/users/:id', requirePerm('users.manage'), (req, res) => {
       permissions !== undefined ? JSON.stringify(permissions) : u.permissions, u.id);
   if (password) db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(String(password), 10), u.id);
   if (managed_dept_ids !== undefined || managed_roles !== undefined) syncManagedDepts(u.id, managed_dept_ids, managed_roles);
+  if (role !== undefined || department_id !== undefined) syncRolePosition(u.id);
   res.json({ ok: true });
 });
 

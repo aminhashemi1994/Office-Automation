@@ -6,7 +6,7 @@ import { fmtRelative } from '../utils.js';
 import { Modal, Field, Avatar, Segmented, UserPicker } from '../components/common.jsx';
 import ImageCropper from '../components/ImageCropper.jsx';
 
-const ROLES = { admin: ['مدیر سامانه', 'badge-red'], manager: ['سرگروه', 'badge-amber'], employee: ['کارمند', 'badge-sky'] };
+const ROLES = { admin: ['مدیر سامانه', 'badge-red'], director: ['مدیر واحد', 'badge-primary'], manager: ['سرگروه', 'badge-amber'], employee: ['کارمند', 'badge-sky'] };
 const EXTRA_PERMS = [
   ['users.manage', 'مدیریت کاربران'],
   ['departments.manage', 'مدیریت واحدها'],
@@ -256,8 +256,20 @@ function UserModal({ user: u, departments, onClose, onDone }) {
           <input className="input" type="password" value={f.password} onChange={e => set('password', e.target.value)} dir="ltr" style={{ textAlign: 'left' }} />
         </Field>
         <Field label="نقش">
-          <select className="input" value={f.role} onChange={e => set('role', e.target.value)}>
+          <select className="input" value={f.role} onChange={e => {
+            const role = e.target.value;
+            set('role', role);
+            // سِمَت در واحدِ خودش از روی نقش (همان قاعدهٔ سرور)
+            const dep = Number(f.department_id);
+            if (dep && role !== 'admin') {
+              set('managed_roles', [
+                ...f.managed_roles.filter(x => Number(x.department_id) !== dep),
+                ...(role === 'director' ? [{ department_id: dep, position: 'director' }] : role === 'manager' ? [{ department_id: dep, position: 'head' }] : []),
+              ]);
+            }
+          }}>
             <option value="employee">کارمند</option>
+            <option value="director">مدیر واحد</option>
             <option value="manager">سرگروه</option>
             <option value="admin">مدیر سامانه</option>
           </select>

@@ -362,7 +362,7 @@ r.post('/recordings', recordUpload.single('file'), (req, res) => {
 
 // دسترسی به بخش ضبط‌ها: فقط مدیر سامانه و سرگروه‌ها/مدیران واحدها
 function canViewRecordings(user) {
-  if (user.role === 'admin' || user.role === 'manager') return true;
+  if (user.role === 'admin' || (user.role === 'manager' || user.role === 'director')) return true;
   return !!db.prepare('SELECT 1 FROM departments WHERE manager_id = ?').get(user.id);
 }
 
