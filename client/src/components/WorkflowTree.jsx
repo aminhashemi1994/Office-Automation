@@ -69,6 +69,10 @@ function ParallelView({ req, variant }) {
         </div>
         <Group title="پاسخ داده‌اند" list={answered} render={p => (<>
           {p.answer && <span className="wf-pill ok" title={p.answer}><Check size={11} /> {p.answer.length > 40 ? p.answer.slice(0, 40) + '…' : p.answer}</span>}
+          {p.answered_by_deputy && <span className="wf-pill seen">به نیابت: {p.answered_by_deputy}</span>}
+          {p.signed
+            ? <span className="wf-pill ok"><PenLine size={11} /> امضا شد</span>
+            : <span className="wf-pill muted"><PenLine size={11} /> بدون امضا</span>}
           <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}>{fmtDateTime(p.answered_at)}</span>
         </>)} />
         <Group title="دیده‌اند، هنوز پاسخ نداده‌اند" list={seen} render={p => (

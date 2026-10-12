@@ -112,7 +112,8 @@ function TaskBadges({ t, showAssignee }) {
 function TaskCard({ t, showAssignee, onOpen, onMove, onRemove, canRemove }) {
   const [pl, pc] = PRIORITY[t.priority] || PRIORITY.normal;
   return (
-    <div className="task-card" onClick={() => onOpen(t)}>
+    <div className="task-card" onClick={() => onOpen(t)} draggable
+      onDragStart={e => { e.dataTransfer.setData('text/task-id', String(t.id)); e.dataTransfer.effectAllowed = 'move'; }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 5 }}>
         <b style={{ fontSize: 13.5 }}>{t.title}</b>
         <span className={`badge ${pc}`}>{pl}</span>
@@ -360,6 +361,7 @@ export default function Tasks() {
     }
   }, [wantTaskId, mine, assigned]);
 
+  const [dragOver, setDragOver] = useState(null);
   const move = async (t, status) => {
     try { await api(`/tasks/${t.id}`, { method: 'PUT', body: { status } }); load(); }
     catch (e) { toast(e.message, 'error'); }
@@ -373,7 +375,7 @@ export default function Tasks() {
     const found = [...mine, ...assigned].find(t => t.id === Number(id));
     if (found) setEditing(found);
   };
-  const canRemoveOf = (t) => t.assigner_id === user.id || user.role === 'admin';
+  const canRemoveOf = (t) => t.assigner_id === user.id || t.assignee_id === user.id || user.role === 'admin';
 
   // مجموعهٔ پایه بر اساس تب
   const base = tab === 'to-others' ? assigned
@@ -491,7 +493,15 @@ export default function Tasks() {
           {COLS.map(([key, label, Icon, color]) => {
             const rows = filtered.filter(t => t.status === key);
             return (
-              <div key={key} className="kanban-col">
+              <div key={key} className={`kanban-col ${dragOver === key ? 'drag-over' : ''}`}
+                // [جابه‌جایی] کشیدن و رها کردنِ کارت بین ستون‌ها
+                onDragOver={e => { if (e.dataTransfer.types.includes('text/task-id')) { e.preventDefault(); setDragOver(key); } }}
+                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
+                onDrop={e => {
+                  e.preventDefault(); setDragOver(null);
+                  const t = filtered.find(x => x.id === Number(e.dataTransfer.getData('text/task-id')));
+                  if (t && t.status !== key) move(t, key);
+                }}>
                 <h4><Icon size={16} style={{ color }} /> {label} <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>({fa(rows.length)})</span></h4>
                 {rows.map(t => (
                   <TaskCard key={t.id} t={t} showAssignee={showAssignee} onOpen={setEditing} onMove={move}

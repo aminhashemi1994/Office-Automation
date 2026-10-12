@@ -18,12 +18,19 @@ import { hasPerm } from './auth.js';
 // ---------------------------------------------------------------------------
 const isActive = (id) => !!db.prepare('SELECT 1 FROM users WHERE id = ? AND is_active = 1').get(id);
 
+const hasExplicitPositions = (deptId) =>
+  !!db.prepare('SELECT 1 FROM department_managers WHERE department_id = ? LIMIT 1').get(deptId);
+
 // دارندگانِ یک سِمَتِ مشخص در یک واحد
 export function deptPositionHolders(deptId, position) {
   if (!deptId) return [];
   const ids = new Set();
   for (const row of db.prepare('SELECT user_id FROM department_managers WHERE department_id = ? AND position = ?')
     .all(deptId, position)) ids.add(row.user_id);
+  // قاعده‌های قدیمی (مدیرِ اصلی = مدیر، نقشِ manager = سرگروه) فقط برای واحدی که هنوز هیچ سِمَتِ
+  // صریحی برایش ثبت نشده. وقتی سِمَت‌ها دستی مشخص شده‌اند، همان ملاک است — وگرنه سامانه
+  // سرگروه را مدیر (یا برعکس) حساب می‌کرد.
+  if (hasExplicitPositions(deptId)) return [...ids].filter(isActive);
   if (position === 'director') {
     // «مدیرِ اصلیِ واحد» در جدول departments هم همان مدیر است
     const dept = db.prepare('SELECT manager_id FROM departments WHERE id = ?').get(deptId);
@@ -52,12 +59,13 @@ export function positionsOf(userId) {
   const rows = db.prepare('SELECT department_id, position FROM department_managers WHERE user_id = ?').all(userId);
   const out = rows.map(r => ({ department_id: r.department_id, position: r.position }));
   for (const d of db.prepare('SELECT id FROM departments WHERE manager_id = ?').all(userId)) {
+    if (hasExplicitPositions(d.id)) continue;
     if (!out.some(x => x.department_id === d.id && x.position === 'director')) {
       out.push({ department_id: d.id, position: 'director' });
     }
   }
   const u = db.prepare('SELECT department_id, role FROM users WHERE id = ?').get(userId);
-  if (u?.role === 'manager' && u.department_id
+  if (u?.role === 'manager' && u.department_id && !hasExplicitPositions(u.department_id)
     && !out.some(x => x.department_id === u.department_id && x.position === 'head')) {
     out.push({ department_id: u.department_id, position: 'head' });
   }

@@ -251,7 +251,7 @@ function UserModal({ user: u, departments, onClose, onDone }) {
       )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <Field label="نام کامل"><input className="input" value={f.full_name} onChange={e => set('full_name', e.target.value)} /></Field>
-        <Field label="نام کاربری"><input className="input" value={f.username} onChange={e => set('username', e.target.value)} disabled={!!u} dir="ltr" style={{ textAlign: 'left' }} /></Field>
+        <Field label="نام کاربری"><input className="input" value={f.username} onChange={e => set('username', e.target.value)} dir="ltr" style={{ textAlign: 'left' }} /></Field>
         <Field label={u ? 'رمز عبور جدید (خالی = بدون تغییر)' : 'رمز عبور'}>
           <input className="input" type="password" value={f.password} onChange={e => set('password', e.target.value)} dir="ltr" style={{ textAlign: 'left' }} />
         </Field>

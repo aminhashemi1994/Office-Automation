@@ -11,7 +11,7 @@ import {
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { fmtDateTime, fa } from '../utils.js';
-import { Modal, Field, UserPicker, Avatar } from './common.jsx';
+import { Modal, Field, UserPicker, Avatar, Segmented } from './common.jsx';
 import { JalaliDatePicker } from './JalaliDatePicker.jsx';
 import { TimePicker } from './TimePicker.jsx';
 import { AttachmentPicker, toFileIds } from './Attachments.jsx';
@@ -318,6 +318,7 @@ export default function TaskModal({ task, projects = [], defaultProjectId = null
   const [description, setDescription] = useState(task?.description || '');
   const [assignee, setAssignee] = useState(task?.assignee_id || defaultAssigneeId || user.id);
   const [priority, setPriority] = useState(task?.priority || 'normal');
+  const [status, setStatus] = useState(task?.status || 'todo'); // [وضعیت] از همین پنجره قابل تغییر است
   const [projectId, setProjectId] = useState(task?.project_id || defaultProjectId || '');
   const sp = isoToParts(task?.start_at);
   const dp = isoToParts(task?.deadline);
@@ -363,6 +364,7 @@ export default function TaskModal({ task, projects = [], defaultProjectId = null
         remind_at: remindDate ? partsToIso(remindDate, remindTime, 9) : null,
         attachments: toFileIds(attachments),
         participant_ids: participants,
+        ...(task ? { status } : {}),
       };
       if (task) await api(`/tasks/${task.id}`, { method: 'PUT', body });
       else await api('/tasks', {
@@ -375,15 +377,37 @@ export default function TaskModal({ task, projects = [], defaultProjectId = null
     setBusy(false);
   };
 
+  // [حذف] فقط واگذارکننده (سازندهٔ وظیفه) یا مدیر سامانه — همان قاعدهٔ سرور
+  const canRemove = !!task && (task.assigner_id === user.id || task.assignee_id === user.id || user.role === 'admin');
+  const remove = async () => {
+    const note = task.assigner_id !== user.id ? '\nواگذارکننده از حذف آن خبردار می‌شود.' : '';
+    if (!window.confirm(`وظیفهٔ «${task.title}» حذف شود؟${note}`)) return;
+    setBusy(true);
+    try { await api(`/tasks/${task.id}`, { method: 'DELETE' }); onDone(); toast('وظیفه حذف شد'); }
+    catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+
   return (
     <Modal title={task ? 'ویرایش وظیفه' : 'وظیفهٔ جدید'} onClose={onClose}
       footer={<>
+        {canRemove && (
+          <button className="btn btn-ghost" style={{ color: 'var(--red)', marginInlineEnd: 'auto' }} disabled={busy} onClick={remove}>
+            <Trash2 size={15} /> حذف وظیفه
+          </button>
+        )}
         <button className="btn btn-ghost" onClick={onClose}>انصراف</button>
         <button className="btn btn-primary" disabled={!title.trim() || busy} onClick={save}>{task ? 'ذخیره' : 'ایجاد وظیفه'}</button>
       </>}>
       <Field label="عنوان">
         <input className="input" value={title} onChange={e => setTitle(e.target.value)} autoFocus />
       </Field>
+      {task && (
+        <Field label="وضعیت">
+          <Segmented value={status} onChange={setStatus}
+            options={[{ value: 'todo', label: 'در انتظار' }, { value: 'doing', label: 'در حال انجام', tone: 'primary' }, { value: 'done', label: 'انجام شده', tone: 'success' }]} />
+        </Field>
+      )}
       <Field label="توضیحات">
         <textarea className="input" value={description} onChange={e => setDescription(e.target.value)} />
       </Field>

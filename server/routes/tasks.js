@@ -271,8 +271,15 @@ r.put('/:id', (req, res) => {
 r.delete('/:id', (req, res) => {
   const t = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'تسک یافت نشد' });
-  if (t.assigner_id !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'دسترسی غیرمجاز' });
+  // واگذارکننده، مسئولِ انجام، یا مدیر سامانه. اگر مسئولِ انجام حذف کند، واگذارکننده خبردار می‌شود تا ردش گم نشود.
+  if (t.assigner_id !== req.user.id && t.assignee_id !== req.user.id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'فقط واگذارکننده یا مسئولِ انجامِ وظیفه می‌تواند آن را حذف کند' });
+  }
   db.prepare('DELETE FROM tasks WHERE id = ?').run(t.id);
+  if (t.assigner_id && t.assigner_id !== req.user.id) {
+    notifyUser(t.assigner_id, { type: 'task', title: 'وظیفه حذف شد',
+      body: `«${t.title}» توسط ${req.user.full_name} حذف شد`, link: '/tasks' });
+  }
   res.json({ ok: true });
 });
 

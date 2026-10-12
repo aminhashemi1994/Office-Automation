@@ -546,55 +546,69 @@ function isParallel(rq) {
 function roundStartId(rq) {
   return db.prepare(`SELECT MAX(id) m FROM workflow_actions WHERE request_id = ? AND action IN ('submit', 'resubmit')`).get(rq.id)?.m || 0;
 }
-function parallelDone(rq) {
+// [گردش موازی] واحدِ شمارش «نفر» است، نه مرحله: همهٔ افرادِ همهٔ مراحل باید هر کدام یک بار پاسخ بدهند.
+// (قبلاً با پاسخِ یک نفر کلِ مرحله بسته می‌شد و بقیهٔ افرادِ همان مرحله از فهرست حذف می‌شدند.)
+// Map<userId, [stepها]> — بدون جانشین‌ها؛ هر نفر خودش باید پاسخ بدهد
+function parallelRequired(rq) {
+  const need = new Map();
+  for (const s of requestSteps(rq)) {
+    for (const id of resolveApprovers(s, rq.requester_id, { withDeputies: false })) {
+      if (!need.has(id)) need.set(id, []);
+      need.get(id).push(s);
+    }
+  }
+  return need;
+}
+// Map<userId, action> — پاسخ‌های این دور
+function parallelAnswered(rq) {
   const since = roundStartId(rq);
-  return new Map(db.prepare(`SELECT step_order, actor_id, comment, created_at, signed FROM workflow_actions
+  // پاسخِ جانشین به نامِ اصل حساب می‌شود
+  return new Map(db.prepare(`SELECT step_order, actor_id, on_behalf_id, comment, created_at, signed FROM workflow_actions
     WHERE request_id = ? AND id > ? AND action IN ('approve', 'skip') ORDER BY id`).all(rq.id, since)
-    .map(a => [a.step_order, a]));
+    .map(a => [a.on_behalf_id || a.actor_id, a]));
 }
-function parallelPendingSteps(rq) {
-  const done = parallelDone(rq);
-  return requestSteps(rq).filter(s => !done.has(s.step_order));
+// به‌جای چه کسی پاسخ می‌دهد؟ خودش (اگر هنوز پاسخ نداده) یا اصلی که جانشینِ فعالش است
+function parallelTarget(rq, userId) {
+  const answered = parallelAnswered(rq);
+  const need = parallelRequired(rq);
+  if (need.has(userId) && !answered.has(userId)) return { forId: userId, steps: need.get(userId) };
+  for (const [pid, steps] of need) {
+    if (!answered.has(pid) && activeDeputiesOf(pid).includes(userId)) return { forId: pid, steps };
+  }
+  return null;
 }
-// مراحلِ بازی که این شخص مسئولشان است
+// مراحلِ بازی که این شخص (یا اصلی که جانشینش است) باید پاسخ بدهد
 function myParallelSteps(rq, userId) {
-  return parallelPendingSteps(rq).filter(s => resolveApprovers(s, rq.requester_id).includes(userId));
+  return parallelTarget(rq, userId)?.steps || [];
+}
+// چه کسانی هنوز باید پاسخ بدهند
+export function pendingApproversOf(rq) {
+  const answered = parallelAnswered(rq);
+  return [...parallelRequired(rq).keys()].filter(id => !answered.has(id));
 }
 // وضعیتِ هر نفر برای نمودار: پاسخ داده / دیده / ندیده
 function parallelPeople(rq) {
-  const done = parallelDone(rq);
+  const answered = parallelAnswered(rq);
+  const need = parallelRequired(rq);
   const sinceAt = db.prepare('SELECT created_at FROM workflow_actions WHERE id = ?').get(roundStartId(rq))?.created_at || '';
   const seenQ = db.prepare('SELECT last_seen_at FROM workflow_request_views WHERE request_id = ? AND user_id = ? AND last_seen_at >= ?');
   const uq = db.prepare(`SELECT u.id, u.full_name, u.avatar_color, d.name AS department_name
     FROM users u LEFT JOIN departments d ON d.id = u.department_id WHERE u.id = ?`);
-  const people = new Map();
-  for (const s of requestSteps(rq)) {
-    const act = done.get(s.step_order);
-    const ids = act ? [act.actor_id] : resolveApprovers(s, rq.requester_id);
-    for (const id of ids) {
-      if (people.has(id)) { people.get(id).steps.push(s.title); continue; }
-      const u = uq.get(id); if (!u) continue;
-      people.set(id, { ...u, steps: [s.title],
-        answered_at: act?.created_at || null, answer: act?.comment || '', signed: act ? act.signed !== 0 : false,
-        seen_at: seenQ.get(rq.id, id, sinceAt)?.last_seen_at || null });
-    }
-  }
-  return [...people.values()];
-}
-// [گردش موازی] چه کسانی هنوز باید پاسخ بدهند
-export function pendingApproversOf(rq) {
-  const ids = new Set();
-  for (const s of parallelPendingSteps(rq)) for (const id of resolveApprovers(s, rq.requester_id)) ids.add(id);
-  return [...ids];
+  // کسی که پاسخ داده ولی دیگر جزو فهرست نیست (مثلاً سِمَتش عوض شده) هم نشان داده می‌شود
+  const ids = [...new Set([...need.keys(), ...answered.keys()])];
+  return ids.map(id => {
+    const u = uq.get(id); if (!u) return null;
+    const act = answered.get(id);
+    const deputy = act?.on_behalf_id ? db.prepare('SELECT full_name FROM users WHERE id = ?').get(act.actor_id)?.full_name : null;
+    return { ...u, steps: (need.get(id) || []).map(s => s.title), answered_by_deputy: deputy || null,
+      answered_at: act?.created_at || null, answer: act?.comment || '', signed: act ? act.signed !== 0 : false,
+      seen_at: seenQ.get(rq.id, id, sinceAt)?.last_seen_at || null };
+  }).filter(Boolean);
 }
 // [گردش موازی] اعلان به همهٔ مسئولانِ همهٔ مراحل (هر نفر یک بار)
 function notifyAllParallel(rq, payload, exceptId) {
-  const ids = new Set();
-  for (const s of parallelPendingSteps(rq)) { // فقط کسانی که هنوز پاسخ نداده‌اند
-    if (s.notify_approver === 0) continue;
-    for (const id of resolveApprovers(s, rq.requester_id)) if (id !== exceptId) ids.add(id);
-  }
-  if (ids.size) notifyUsers([...ids], payload);
+  const ids = pendingApproversOf(rq).filter(id => id !== exceptId);
+  if (ids.length) notifyUsers(ids, payload);
 }
 function quickOptionsOfTemplate(templateId) {
   try { const v = JSON.parse(db.prepare('SELECT quick_options FROM workflow_templates WHERE id = ?').get(templateId)?.quick_options || '[]'); return Array.isArray(v) ? v : []; }
@@ -603,8 +617,10 @@ function quickOptionsOfTemplate(templateId) {
 
 // پاسخِ یک نفر در گردش موازی: همهٔ مراحلِ بازِ او یک‌جا بسته می‌شوند. خروجی: {status} یا {error}
 function actParallel(rq, tpl, user, { option_key, comment = '', sign = false, attIds = [] } = {}) {
-  const mine = myParallelSteps(rq, user.id);
-  if (!mine.length) return { error: 'پاسخ شما برای این درخواست قبلاً ثبت شده یا مسئول آن نیستید' };
+  const target = parallelTarget(rq, user.id);
+  if (!target) return { error: 'پاسخ شما برای این درخواست قبلاً ثبت شده یا مسئول آن نیستید' };
+  const mine = target.steps;
+  const forName = target.forId !== user.id ? db.prepare('SELECT full_name FROM users WHERE id = ?').get(target.forId)?.full_name : null;
   const options = quickOptionsOfTemplate(tpl.id);
   let opt = null;
   if (options.length) {
@@ -612,11 +628,14 @@ function actParallel(rq, tpl, user, { option_key, comment = '', sign = false, at
     if (!opt) return { error: `یکی از گزینه‌ها (${options.map(o => o.label).join(' / ')}) را انتخاب کنید` };
   }
   const note = String(comment || '').trim();
-  const text = opt ? `${opt.label}${note ? ' — ' + note : ''}` : note;
+  // گزینهٔ «هشدار» (مثل رخ داد) بدونِ شرح بی‌معناست
+  if (opt?.kind === 'report' && !note) return { error: `برای «${opt.label}» نوشتنِ شرح الزامی است` };
+  const text = `${forName ? `(به نیابت از ${forName}) ` : ''}${opt ? `${opt.label}${note ? ' — ' + note : ''}` : note}`;
   const signed = !!sign && !!db.prepare("SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(user.id);
-  const ins = db.prepare(`INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments, signed)
-    VALUES (?, ?, ?, 'approve', ?, ?, ?)`);
-  for (const s of mine) ins.run(rq.id, s.step_order, user.id, text, JSON.stringify(attIds), signed ? 1 : 0);
+  const ins = db.prepare(`INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments, signed, on_behalf_id)
+    VALUES (?, ?, ?, 'approve', ?, ?, ?, ?)`);
+  // یک پاسخ برای این شخص — حتی اگر در چند مرحله نامش آمده باشد
+  ins.run(rq.id, mine[0].step_order, user.id, text, JSON.stringify(attIds), signed ? 1 : 0, forName ? target.forId : null);
   // پاسخِ روزانهٔ امروز هم با همین ثبت می‌شود (یک بار پاسخ، نه دو بار)
   if (opt) {
     db.prepare(`INSERT INTO workflow_checkins (template_id, user_id, day, seen_at, responded_at, option_key, option_label, comment, signed, request_id)
@@ -626,19 +645,15 @@ function actParallel(rq, tpl, user, { option_key, comment = '', sign = false, at
         option_label = COALESCE(workflow_checkins.option_label, excluded.option_label),
         comment = CASE WHEN workflow_checkins.responded_at IS NULL THEN excluded.comment ELSE workflow_checkins.comment END,
         request_id = COALESCE(workflow_checkins.request_id, excluded.request_id)`)
-      .run(tpl.id, user.id, tehranNow().date, opt.key, opt.label, note.slice(0, 1000), signed ? 1 : 0, rq.id);
+      .run(tpl.id, target.forId, tehranNow().date, opt.key, opt.label, note.slice(0, 1000), signed ? 1 : 0, rq.id);
   }
-  const left = parallelPendingSteps(rq);
-  const total = requestSteps(rq).length;
+  const left = pendingApproversOf(rq);
+  const total = parallelRequired(rq).size;
   notifyOwner(rq, tpl.id, user.id, {
     title: `${opt?.kind === 'report' ? '⚠️ ' : ''}${tpl.name}: ${opt ? opt.label : 'تایید'}`,
-    body: `${user.full_name} در «${rq.title}» ${opt ? `«${opt.label}»` : 'تایید'} را ثبت کرد${note ? ' — ' + note.slice(0, 120) : ''} (${(total - left.length).toLocaleString('fa-IR')} از ${total.toLocaleString('fa-IR')})`,
+    body: `${user.full_name}${forName ? ` (به نیابت از ${forName})` : ''} در «${rq.title}» ${opt ? `«${opt.label}»` : 'تایید'} را ثبت کرد${note ? ' — ' + note.slice(0, 120) : ''} (${(total - left.length).toLocaleString('fa-IR')} از ${total.toLocaleString('fa-IR')})`,
   });
-  if (left.length) {
-    // مرحلهٔ فعلی فقط برای برچسبِ فهرست‌هاست
-    db.prepare('UPDATE workflow_requests SET current_step = ? WHERE id = ?').run(left[0].step_order, rq.id);
-    return { status: 'in_progress' };
-  }
+  if (left.length) return { status: 'in_progress' };
   if (tpl.requester_final_approval && rq.requester_id !== user.id) {
     db.prepare(`UPDATE workflow_requests SET status = 'awaiting_requester', step_due_at = NULL, last_reminded_at = NULL WHERE id = ?`).run(rq.id);
     notifyUsers([rq.requester_id], { type: 'workflow', title: `در انتظار تایید نهایی شما: ${tpl.name}`,
@@ -653,7 +668,7 @@ function requestDetail(id, userId) {
   const req_ = db.prepare(`
     SELECT r.*, t.name AS template_name, t.form_schema, t.requester_signature,
            t.notify_requester_on_final, t.requester_final_approval, u.full_name AS requester_name,
-           (u.signature_path IS NOT NULL AND u.signature_path != '') AS requester_has_signature,
+           (u.signature_path IS NOT NULL AND u.signature_path != '' AND COALESCE(r.requester_signed, 1) != 0) AS requester_has_signature,
            d.name AS requester_department
     FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
@@ -1084,7 +1099,10 @@ function notifyOwner(rq, tplId, actorId, { final = false, title, body }) {
 // [پیشرفت] چند مرحله از چند مرحله طی شده است
 function progressOf(rq) {
   const total = requestSteps(rq).length;
-  if (rq.status === 'in_progress' && isParallel(rq)) return { done: total - parallelPendingSteps(rq).length, total };
+  if (rq.status === 'in_progress' && isParallel(rq)) {
+    const n = parallelRequired(rq).size;
+    return { done: n - pendingApproversOf(rq).length, total: n };
+  }
   const done = rq.status === 'approved' || rq.status === 'awaiting_requester' ? total
     : Math.max(0, Math.min(total, (rq.current_step || 1) - 1));
   return { done, total };
@@ -1414,6 +1432,8 @@ r.post('/requests', (req, res) => {
     .run(tpl.id, req.user.id, title, JSON.stringify(form_data), null,
       JSON.stringify(reqAttachments), onBehalfId, onBehalfName);
   const requestId = Number(result.lastInsertRowid);
+  // [امضای دستی] امضای درخواست‌دهنده فقط اگر خودش «درج امضا» را زده باشد
+  db.prepare('UPDATE workflow_requests SET requester_signed = ? WHERE id = ?').run(req.body?.sign ? 1 : 0, requestId);
 
   // مسیرِ پویا (اگر فرآیند مرحلهٔ پویا داشته باشد) و تعیین مرحلهٔ اول
   const ownSteps = buildRequestSteps(requestId, tplSteps, req.body?.routing);
@@ -1549,10 +1569,13 @@ r.get('/requests/following', (req, res) => {
     FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
     JOIN users us ON us.id = r.requester_id
-    WHERE t.owner_user_id = ? ORDER BY r.id DESC LIMIT 300`).all(req.user.id)
+    WHERE t.owner_user_id = @uid OR t.created_by = @uid ORDER BY r.id DESC LIMIT 300`).all({ uid: req.user.id })
     .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq),
       step_watch: watchSummary(rq), progress: progressOf(rq) }));
-  res.json({ requests });
+  // سازنده/پیگیرِ حداقل یک فرآیند → تبِ «پیگیری فرآیندها» همیشه دیده شود، حتی پیش از اولین درخواست
+  const follows = !!db.prepare('SELECT 1 FROM workflow_templates WHERE owner_user_id = ? OR created_by = ? LIMIT 1')
+    .get(req.user.id, req.user.id);
+  res.json({ requests, follows });
 });
 
 // [مورد ۶] فهرست درخواست‌ها با دسترسیِ اسکوپ‌محور:
@@ -1698,6 +1721,7 @@ r.get('/requests/:id/requester-signature', (req, res) => {
   if (!rq) return res.status(404).json({ error: 'درخواست یافت نشد' });
   if (!canViewRequest(req.user, rq)) return res.status(403).json({ error: 'دسترسی غیرمجاز' });
   if (rq.requester_signature === 0) return res.status(404).json({ error: 'امضای درخواست‌دهنده در این فرآیند درج نمی‌شود' });
+  if (rq.requester_signed === 0) return res.status(404).json({ error: 'درخواست‌دهنده امضا درج نکرده است' });
   const u = db.prepare('SELECT signature_path FROM users WHERE id = ?').get(rq.requester_id);
   if (!u?.signature_path) return res.status(404).json({ error: 'امضایی ثبت نشده است' });
   const p = path.join(SIGNATURES_DIR, u.signature_path);
@@ -2209,6 +2233,9 @@ r.post('/checkins', (req, res) => {
   }
   const opt = quickOptionsOf(t).find(o => o.key === option_key);
   if (!opt) return res.status(400).json({ error: 'گزینهٔ نامعتبر' });
+  if (opt.kind === 'report' && !String(comment || '').trim() && !request_id) {
+    return res.status(400).json({ error: `برای «${opt.label}» نوشتنِ شرح الزامی است` });
+  }
   let reqId = null;
   // گزارشِ پیوسته اختیاری است؛ «رخ داد» هم مثل بقیهٔ گزینه‌ها با امضا و توضیح ثبت می‌شود
   if (request_id) {

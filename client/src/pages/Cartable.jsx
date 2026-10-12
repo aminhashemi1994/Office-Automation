@@ -32,7 +32,8 @@ export default function Cartable() {
   const [templates, setTemplates] = useState([]);
   const [newReq, setNewReq] = useState(false);
   const [search, setSearch] = useState('');
-  const [following, setFollowing] = useState([]); // [مسئول پیگیری] درخواست‌های فرآیندهایی که پیگیرشان هستم
+  const [following, setFollowing] = useState([]);
+  const [follows, setFollows] = useState(false); // سازنده یا پیگیرِ حداقل یک فرآیند // [مسئول پیگیری] درخواست‌های فرآیندهایی که پیگیرشان هستم
   const [trees, setTrees] = useState({});         // {requestId: detail} — نمای درختیِ باز در فهرست
   const treesRef = useRef(trees); treesRef.current = trees;
   const [quick, setQuick] = useState(null); // {row, comment} — تایید و امضا از همین کارتابل
@@ -59,7 +60,7 @@ export default function Cartable() {
     ]);
     const ci = await api('/workflows/checkins/today').catch(() => ({ items: [], pending: 0 }));
     setCheckins(ci.items || []);
-    setInbox(i.requests); setMine(m.requests); setFollowing(f.requests || []);
+    setInbox(i.requests); setMine(m.requests); setFollowing(f.requests || []); setFollows(!!f.follows);
     // درخت‌های باز، با دادهٔ تازه به‌روز شوند
     Object.keys(treesRef.current).forEach(id => openTree(Number(id), true));
     setCartableCount(i.requests.length + (ci.items || []).filter(c => !c.responded_at
@@ -135,7 +136,7 @@ export default function Cartable() {
             )}
           </button>
           <button className={`tab ${tab === 'mine' ? 'active' : ''}`} onClick={() => setTab('mine')}>درخواست‌های من</button>
-          {(following.length > 0 || followedDaily.length > 0) && (
+          {(follows || following.length > 0 || followedDaily.length > 0) && (
             <button className={`tab ${tab === 'following' ? 'active' : ''}`} onClick={() => setTab('following')}
               title="درخواست‌های فرآیندهایی که شما مسئول پیگیری‌شان هستید">
               پیگیری فرآیندها
@@ -304,8 +305,8 @@ export default function Cartable() {
           footer={<>
             <button className="btn btn-ghost" onClick={() => setQuick(null)}>انصراف</button>
             <Link className="btn btn-ghost" to={`/cartable/${quick.row.id}`}>دیدن جزئیات</Link>
-            <button className="btn btn-primary" disabled={busy} onClick={quickApprove}>
-              <Check size={16} /> {quick.row.parallel ? 'ثبت پاسخ' : quick.sign ? 'تایید و امضا' : 'تایید'}
+            <button className="btn btn-primary" disabled={busy || (quick.option?.kind === 'report' && !quick.comment.trim())} onClick={quickApprove}>
+              <Check size={16} /> {quick.row.parallel ? (quick.sign ? 'ثبت و امضا' : 'ثبت پاسخ') : quick.sign ? 'تایید و امضا' : 'تایید'}
             </button>
           </>}>
           <div className="req-meta">
@@ -313,10 +314,10 @@ export default function Cartable() {
             {quick.option ? <span>پاسخ شما: <b>{quick.option.label}</b></span> : <span>مرحله: <b>{quick.row.step_title}</b></span>}
             <span>درخواست‌دهنده: <b>{quick.row.requester_name}</b></span>
           </div>
-          {quick.row.step_requires_signature ? (
+          {quick.row.step_requires_signature || quick.row.parallel ? (
             <Field label="امضای شما"><MySignature signed={!!quick.sign} onChange={v => setQuick(q => ({ ...q, sign: v }))} /></Field>
           ) : null}
-          <Field label="پی‌نوشت (اختیاری)">
+          <Field label={quick.option?.kind === 'report' ? 'شرح (الزامی)' : 'پی‌نوشت (اختیاری)'}>
             <textarea className="input" value={quick.comment} autoFocus
               onChange={e => setQuick(q => ({ ...q, comment: e.target.value }))} />
           </Field>
@@ -327,7 +328,7 @@ export default function Cartable() {
         <Modal title={`${ciConfirm.item.template_name}: ${ciConfirm.option.label}`} onClose={() => setCiConfirm(null)}
           footer={<>
             <button className="btn btn-ghost" onClick={() => setCiConfirm(null)}>انصراف</button>
-            <button className="btn btn-primary" disabled={busy}
+            <button className="btn btn-primary" disabled={busy || (ciConfirm.option.kind === 'report' && !ciConfirm.comment.trim())}
               onClick={() => submitCheckin(ciConfirm.item, ciConfirm.option, { comment: ciConfirm.comment, sign: !!ciConfirm.sign })}>
               <Check size={16} /> {ciConfirm.sign ? 'ثبت و امضا' : 'ثبت'}
             </button>
@@ -338,8 +339,8 @@ export default function Cartable() {
           {ciConfirm.item.requires_signature ? (
             <Field label="امضای شما"><MySignature signed={!!ciConfirm.sign} onChange={v => setCiConfirm(q => ({ ...q, sign: v }))} /></Field>
           ) : null}
-          <Field label="توضیح (اختیاری)">
-            <textarea className="input" value={ciConfirm.comment}
+          <Field label={ciConfirm.option.kind === 'report' ? 'شرح (الزامی)' : 'توضیح (اختیاری)'}>
+            <textarea className="input" value={ciConfirm.comment} autoFocus={ciConfirm.option.kind === 'report'}
               onChange={e => setCiConfirm(q => ({ ...q, comment: e.target.value }))} />
           </Field>
         </Modal>
@@ -418,6 +419,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
   const [mod, setMod] = useState(null);      // گزینهٔ انتخاب‌شده
   const [modNote, setModNote] = useState('');
   const [modSign, setModSign] = useState(false);
+  const [reqSign, setReqSign] = useState(false); // [امضای دستی] امضای درخواست‌دهنده در سند
   useEffect(() => { setMod(null); setModNote(''); setModSign(false); }, [tplId]);
   const confirmOnly = !!mod; // هر گزینه‌ای انتخاب شود، با امضا و توضیح ثبت می‌شود
   const submitModule = async () => {
@@ -477,7 +479,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
         attachments: toIds(attachments),
         on_behalf_id: onBehalfId ? Number(onBehalfId) : null,
         on_behalf_name: onBehalfId ? '' : onBehalfName,
-        cc, routing,
+        cc, routing, sign: reqSign,
       } });
       if (r.warning) toast(r.warning, 'error');
       onDone(r.id);
@@ -490,7 +492,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
       footer={<>
         <button className="btn btn-ghost" onClick={onClose}>انصراف</button>
         {confirmOnly ? (
-          <button className="btn btn-primary" disabled={busy} onClick={submitModule}>
+          <button className="btn btn-primary" disabled={busy || (mod?.kind === 'report' && !modNote.trim())} onClick={submitModule}>
             <Check size={16} /> {modSign ? 'ثبت و امضا' : 'ثبت'}
           </button>
         ) : (
@@ -540,7 +542,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
       {confirmOnly ? (
         <>
           {tpl?.requester_signature !== 0 && <Field label="امضای شما"><MySignature signed={modSign} onChange={setModSign} /></Field>}
-          <Field label="توضیح (اختیاری)">
+          <Field label={mod?.kind === 'report' ? 'شرح (الزامی)' : 'توضیح (اختیاری)'}>
             <textarea className="input" value={modNote} onChange={e => setModNote(e.target.value)} />
           </Field>
         </>
@@ -764,6 +766,9 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
           </div>
         </div>
       )}
+        {tpl?.requester_signature !== 0 && (
+          <Field label="امضای شما در سند (اختیاری)"><MySignature signed={reqSign} onChange={setReqSign} /></Field>
+        )}
       </>)}
     </Modal>
   );

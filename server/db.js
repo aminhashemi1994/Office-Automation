@@ -1308,6 +1308,10 @@ try { db.exec("ALTER TABLE workflow_templates ADD COLUMN quick_options TEXT DEFA
 // [امضای دستی] امضا دیگر خودکار درج نمی‌شود؛ تاییدکننده باید خودش «درج امضا» را بزند.
 // NULL = اقدام‌های قدیمی (پیش از این تغییر، امضا خودکار درج می‌شد)
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN signed INTEGER'); } catch {}
+// [گردش موازی] پاسخِ جانشین به‌جای اصل: on_behalf_id = کسی که پاسخ به‌جای او ثبت شده
+try { db.exec('ALTER TABLE workflow_actions ADD COLUMN on_behalf_id INTEGER'); } catch {}
+// [امضای دستیِ درخواست‌دهنده] ۱ = هنگام ثبت «درج امضا» زده است؛ NULL = درخواست‌های قدیمی (مثل قبل درج می‌شود)
+try { db.exec('ALTER TABLE workflow_requests ADD COLUMN requester_signed INTEGER'); } catch {}
 // [سازنده/پیگیر] اگر ۱ باشد، مسئول پیگیری همیشه همان سازندهٔ فرآیند است
 try { db.exec('ALTER TABLE workflow_templates ADD COLUMN owner_is_creator INTEGER DEFAULT 0'); } catch {}
 // [گردش موازی] بدون ترتیب: همهٔ مسئولان هم‌زمان درخواست را می‌گیرند و هر نفر فقط یک بار پاسخ می‌دهد

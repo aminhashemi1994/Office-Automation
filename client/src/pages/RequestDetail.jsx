@@ -723,18 +723,22 @@ export default function RequestDetail() {
           onClose={() => { setConfirm(null); setActionFiles([]); setSign(false); setOpt(null); }}
           footer={<>
             <button className="btn btn-ghost" onClick={() => { setConfirm(null); setActionFiles([]); setSign(false); setOpt(null); }}>انصراف</button>
-            <button className={`btn ${confirm === 'reject' ? 'btn-danger' : 'btn-primary'}`} onClick={act} disabled={busy}>
+            <button className={`btn ${confirm === 'reject' ? 'btn-danger' : 'btn-primary'}`} onClick={act}
+              disabled={busy || (confirm === 'approve' && opt?.kind === 'report' && !comment.trim())}>
               {confirm === 'approve' ? (req.parallel ? 'ثبت پاسخ' : 'تایید نهایی') : confirm === 'skip' ? 'عبور از این مرحله' : 'رد درخواست'}
             </button>
           </>}>
           {confirm === 'approve' && opt && (
             <p style={{ fontSize: 13, marginTop: 0 }}>پاسخ شما: <b>{opt.label}</b></p>
           )}
+          {confirm === 'approve' && req.parallel && (
+            <Field label="امضای شما (اختیاری)"><MySignature signed={sign} onChange={setSign} /></Field>
+          )}
           {confirm === 'approve' && !req.can_final && !req.parallel
             && req.steps.find(st => st.step_order === req.current_step)?.requires_signature !== 0 && (
             <Field label="امضای شما"><MySignature signed={sign} onChange={setSign} /></Field>
           )}
-          <Field label={confirm === 'reject' ? 'توضیحات (اختیاری)' : 'پی‌نوشت (اختیاری)'}>
+          <Field label={confirm === 'reject' ? 'توضیحات (اختیاری)' : opt?.kind === 'report' ? 'شرح (الزامی)' : 'پی‌نوشت (اختیاری)'}>
             <textarea className="input" value={comment} onChange={e => setComment(e.target.value)} autoFocus
               placeholder={confirm === 'reject' ? 'دلیل رد درخواست…' : 'توضیحات تکمیلی…'} />
           </Field>

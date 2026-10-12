@@ -1103,3 +1103,7 @@ label:has(> input[type="checkbox"]):hover { background: var(--bg-2); }
 label:has(> input[type="checkbox"]:checked) { color: var(--text-1); }
 label:has(> input[type="checkbox"]:disabled) { cursor: not-allowed; opacity: .7; }
 label:has(> input[type="checkbox"]:disabled):hover { background: transparent; }
+
+/* [جابه‌جایی وظایف] ستونی که کارت روی آن کشیده می‌شود */
+.kanban-col.drag-over { outline: 2px dashed var(--primary); outline-offset: -4px; background: var(--primary-soft); }
+.task-card[draggable] { cursor: grab; }

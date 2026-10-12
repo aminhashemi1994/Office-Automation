@@ -226,6 +226,17 @@ r.put('/users/:id', requirePerm('users.manage'), (req, res) => {
   const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
   if (!u) return res.status(404).json({ error: 'کاربر یافت نشد' });
   const { full_name, role, department_id, position, phone, email, is_active, password, permissions, managed_dept_ids, managed_roles } = req.body || {};
+  // [نام کاربری] قابل تغییر، به شرطِ یکتا بودن
+  if (req.body?.username !== undefined) {
+    const uname = String(req.body.username || '').trim();
+    if (!uname) return res.status(400).json({ error: 'نام کاربری نمی‌تواند خالی باشد' });
+    if (uname !== u.username) {
+      if (db.prepare('SELECT 1 FROM users WHERE username = ? AND id != ?').get(uname, u.id)) {
+        return res.status(400).json({ error: 'این نام کاربری قبلاً ثبت شده است' });
+      }
+      db.prepare('UPDATE users SET username = ? WHERE id = ?').run(uname, u.id);
+    }
+  }
   db.prepare(`UPDATE users SET full_name = ?, role = ?, department_id = ?, position = ?, phone = ?, email = ?, is_active = ?, permissions = ? WHERE id = ?`)
     .run(full_name ?? u.full_name, role ?? u.role, department_id !== undefined ? department_id : u.department_id,
       position ?? u.position, phone ?? u.phone, email ?? u.email,
@@ -302,7 +313,7 @@ r.post('/departments', requirePerm('departments.manage'), (req, res) => {
   try {
     const result = db.prepare('INSERT INTO departments (name, description, manager_id, is_management) VALUES (?, ?, ?, ?)')
       .run(name, description, manager_id || null, is_management ? 1 : 0);
-    if (manager_id) db.prepare('INSERT OR IGNORE INTO department_managers (department_id, user_id) VALUES (?, ?)').run(result.lastInsertRowid, manager_id);
+    if (manager_id) db.prepare("INSERT OR IGNORE INTO department_managers (department_id, user_id, position) VALUES (?, ?, 'director')").run(result.lastInsertRowid, manager_id);
     res.json({ id: result.lastInsertRowid });
   } catch {
     res.status(400).json({ error: 'واحدی با این نام وجود دارد' });
@@ -318,7 +329,8 @@ r.put('/departments/:id', requirePerm('departments.manage'), (req, res) => {
       manager_id !== undefined ? (manager_id || null) : d.manager_id,
       is_management !== undefined ? (is_management ? 1 : 0) : d.is_management, d.id);
   // مدیر اصلیِ جدید را به جدول چندمدیره هم اضافه کن
-  if (manager_id) db.prepare('INSERT OR IGNORE INTO department_managers (department_id, user_id) VALUES (?, ?)').run(d.id, manager_id);
+  // (با سِمَتِ «مدیر» — پیش‌فرضِ ستون «سرگروه» است و مدیرِ اصلی را اشتباهاً سرگروه ثبت می‌کرد)
+  if (manager_id) db.prepare("INSERT OR IGNORE INTO department_managers (department_id, user_id, position) VALUES (?, ?, 'director')").run(d.id, manager_id);
   res.json({ ok: true });
 });
 
@@ -350,7 +362,8 @@ r.post('/departments/:id/positions', requirePerm('departments.manage'), (req, re
   for (const id of heads) ins.run(d.id, id, 'head');
   for (const id of directors) ins.run(d.id, id, 'director');
   // «مدیر اصلی» همان اولین مدیر است تا گزارش‌ها و چاپ‌های قدیمی درست بمانند
-  db.prepare('UPDATE departments SET manager_id = ? WHERE id = ?').run(directors[0] || heads[0] || null, d.id);
+  // (فقط از میانِ مدیران؛ قبلاً اگر واحد مدیر نداشت، سرگروه «مدیرِ اصلی» و در نتیجه مدیر هم حساب می‌شد)
+  db.prepare('UPDATE departments SET manager_id = ? WHERE id = ?').run(directors[0] || null, d.id);
   // اگر کسی سرگروهِ ثبت‌شده است اما نقش کاربری‌اش «کارمند» مانده، دیگر لازم نیست
   // نقشش را دستی عوض کنند؛ سِمَتِ واحد خودش دسترسی مدیریتی می‌دهد.
   res.json({
