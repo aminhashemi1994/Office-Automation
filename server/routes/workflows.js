@@ -542,7 +542,18 @@ function currentStepWatch(rq) {
 //  وقتی همهٔ مراحل پاسخ گرفتند، درخواست بسته می‌شود.
 // ============================================================================
 function isParallel(rq) {
+  // درخواستِ روزانه همیشه موازی است (هر نفر یک پاسخ، بدون ترتیب)
+  const day = rq.daily_day ?? db.prepare('SELECT daily_day FROM workflow_requests WHERE id = ?').get(rq.id)?.daily_day;
+  if (day) return true;
   return !!db.prepare('SELECT parallel_flow FROM workflow_templates WHERE id = ?').get(rq.template_id)?.parallel_flow;
+}
+// فرآیندِ روزانه: یادآوری روزانه روشن + (گردش موازی یا ماژول‌های رخ داد/رخ نداد)
+// برای چنین فرآیندی هر روز یک درخواست ساخته می‌شود تا در «پیگیری فرآیندها» روز به روز دیده شود.
+function isDailyTemplate(t) {
+  let cfg = null; try { cfg = JSON.parse(t?.daily_reminder || ''); } catch {}
+  if (!cfg?.enabled) return false;
+  if (t.parallel_flow) return true;
+  try { return JSON.parse(t.quick_options || '[]').length > 0; } catch { return false; }
 }
 // اقدام‌های این دور (پس از آخرین ثبت/ارسالِ مجدد)
 function roundStartId(rq) {
@@ -638,9 +649,7 @@ function applyTodayCheckins(requestId, tpl) {
 // [درخواستِ روزانه] درخواستِ امروزِ یک فرآیندِ روزانهٔ موازی؛ اگر نیست ساخته می‌شود.
 // به نامِ مسئولِ پیگیری (یا سازنده) ثبت می‌شود تا هر روز در «پیگیری فرآیندها» با نمودار و چاپ دیده شود.
 export function ensureDailyRequest(t) {
-  if (!t?.parallel_flow) return null;
-  let cfg = null; try { cfg = JSON.parse(t.daily_reminder || ''); } catch {}
-  if (!cfg?.enabled) return null;
+  if (!isDailyTemplate(t)) return null;
   const day = tehranNow().date;
   const existing = db.prepare('SELECT * FROM workflow_requests WHERE template_id = ? AND daily_day = ? ORDER BY id LIMIT 1').get(t.id, day);
   if (existing) return existing;
@@ -656,6 +665,48 @@ export function ensureDailyRequest(t) {
     .run(id, requesterId, 'ثبتِ خودکارِ درخواستِ روزانه');
   applyTodayCheckins(id, t);
   return db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(id);
+}
+
+// [درخواستِ روزانه — روزهای گذشته] پاسخ‌هایی که پیش از این تغییر فقط از کارتِ روزانه ثبت شده‌اند،
+// برای هر روز در یک درخواست جمع می‌شوند تا آن روزها هم در «پیگیری فرآیندها» با نمودار و چاپ دیده شوند.
+// تکراری نمی‌سازد (هر روز حداکثر یک درخواست) و فقط پاسخ‌های بی‌درخواست را برمی‌دارد.
+export function backfillDailyRequests() {
+  const tpls = db.prepare("SELECT * FROM workflow_templates WHERE daily_reminder IS NOT NULL AND daily_reminder != ''").all();
+  const today = tehranNow().date;
+  let made = 0;
+  for (const t of tpls) {
+    if (!isDailyTemplate(t)) continue;
+    const requesterId = t.owner_user_id || t.created_by;
+    const steps = getSteps(t.id);
+    if (!requesterId || !steps.length) continue;
+    const days = db.prepare(`SELECT DISTINCT day FROM workflow_checkins WHERE template_id = ? AND responded_at IS NOT NULL
+      AND request_id IS NULL AND day < ? ORDER BY day`).all(t.id, today).map(r => r.day);
+    for (const day of days) {
+      let rq = db.prepare('SELECT * FROM workflow_requests WHERE template_id = ? AND daily_day = ?').get(t.id, day);
+      if (!rq) {
+        const faDate = new Intl.DateTimeFormat('fa-IR-u-ca-persian', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Tehran' })
+          .format(new Date(`${day}T12:00:00+03:30`));
+        const id = Number(db.prepare(`INSERT INTO workflow_requests (template_id, requester_id, title, form_data, attachments, daily_day, requester_signed, created_at)
+          VALUES (?, ?, ?, '{}', '[]', ?, 0, ?)`).run(t.id, requesterId, `${t.name} — ${faDate}`, day, `${day} 04:30:00`).lastInsertRowid);
+        db.prepare("INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, created_at) VALUES (?, 0, ?, 'submit', ?, ?)")
+          .run(id, requesterId, 'ثبتِ خودکارِ درخواستِ روزانه (از پاسخ‌های ثبت‌شده)', `${day} 04:30:00`);
+        rq = db.prepare('SELECT * FROM workflow_requests WHERE id = ?').get(id);
+        made++;
+      }
+      const ins = db.prepare(`INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments, signed, created_at)
+        VALUES (?, ?, ?, 'approve', ?, '[]', ?, ?)`);
+      for (const c of db.prepare(`SELECT * FROM workflow_checkins WHERE template_id = ? AND day = ? AND responded_at IS NOT NULL
+          AND request_id IS NULL ORDER BY responded_at`).all(t.id, day)) {
+        ins.run(rq.id, steps[0].step_order, c.user_id, `${c.option_label || ''}${c.comment ? ' — ' + c.comment : ''}`, c.signed ? 1 : 0, c.responded_at);
+        db.prepare('UPDATE workflow_checkins SET request_id = ? WHERE id = ?').run(rq.id, c.id);
+      }
+      // روزِ گذشته بسته است: اگر همه پاسخ داده‌اند «تایید نهایی»، وگرنه «در جریان» می‌ماند تا معلوم باشد چه کسی پاسخ نداده
+      if (!pendingApproversOf(rq).length) {
+        db.prepare("UPDATE workflow_requests SET status = 'approved', closed_at = ? WHERE id = ?").run(`${day} 20:00:00`, rq.id);
+      }
+    }
+  }
+  return made;
 }
 
 function quickOptionsOfTemplate(templateId) {
@@ -1147,9 +1198,10 @@ function notifyOwner(rq, tplId, actorId, { final = false, title, body }) {
 // [پیشرفت] چند مرحله از چند مرحله طی شده است
 function progressOf(rq) {
   const total = requestSteps(rq).length;
-  if (rq.status === 'in_progress' && isParallel(rq)) {
+  if (isParallel(rq) && ['in_progress', 'approved', 'rejected'].includes(rq.status)) {
+    // شمارشِ نفر به نفر (پاسخ داده از کل)
     const n = parallelRequired(rq).size;
-    return { done: n - pendingApproversOf(rq).length, total: n };
+    if (n) return { done: n - pendingApproversOf(rq).length, total: n };
   }
   const done = rq.status === 'approved' || rq.status === 'awaiting_requester' ? total
     : Math.max(0, Math.min(total, (rq.current_step || 1) - 1));
@@ -1608,6 +1660,15 @@ r.get('/requests/mine', (req, res) => {
 
 // [مسئول پیگیری] درخواست‌های فرآیندهایی که من مسئول پیگیری‌شان هستم
 r.get('/requests/following', (req, res) => {
+  // درخواستِ امروزِ فرآیندهای روزانه‌ای که دنبال می‌کند، همین حالا ساخته شود (حتی اگر هنوز کسی پاسخ نداده)
+  for (const t of db.prepare(`SELECT * FROM workflow_templates WHERE is_active = 1 AND (owner_user_id = ? OR created_by = ?)
+      AND daily_reminder IS NOT NULL AND daily_reminder != ''`).all(req.user.id, req.user.id)) {
+    try {
+      let cfg = null; try { cfg = JSON.parse(t.daily_reminder); } catch {}
+      const now = tehranNow();
+      if (!cfg?.days?.length || cfg.days.includes(now.weekday)) ensureDailyRequest(t);
+    } catch {}
+  }
   const requests = db.prepare(`
     SELECT r.*, t.name AS template_name, us.full_name AS requester_name
     FROM workflow_requests r
@@ -1812,7 +1873,7 @@ r.post('/requests/:id/action', (req, res) => {
   const step = finalStage ? null : currentStepOf(rq);
 
   // ---------- [گردش موازی] هر نفر یک پاسخ، بدون ترتیب ----------
-  if (!finalStage && tpl.parallel_flow) {
+  if (!finalStage && isParallel(rq)) {
     if (!['approve', 'reject'].includes(action)) return res.status(400).json({ error: 'در این فرآیند فقط پاسخ یا رد ممکن است' });
     if (!myParallelSteps(rq, req.user.id).length) return res.status(403).json({ error: 'پاسخ شما قبلاً ثبت شده یا مسئول این درخواست نیستید' });
     if (attIds.length && !canAttach(tpl, null)) return res.status(400).json({ error: 'پیوست فایل در این مرحله مجاز نیست' });
@@ -2292,7 +2353,7 @@ r.post('/checkins', (req, res) => {
     .get(t.id, req.user.id, now.date);
   if (prev?.responded_at) return res.status(400).json({ error: 'پاسخِ امروزِ شما قبلاً ثبت شده است' });
   // [گردش موازی] اگر درخواستِ بازی از همین فرآیند منتظرِ پاسخِ اوست، همین پاسخ همان‌جا ثبت می‌شود (یک بار، نه دو بار)
-  if (t.parallel_flow) {
+  if (t.parallel_flow || isDailyTemplate(t)) {
     // فرآیندِ روزانه: پاسخِ امروز فقط به درخواستِ امروز می‌رود (نه به درخواستِ روزهای قبل)
     const daily = ensureDailyRequest(t);
     const open = daily

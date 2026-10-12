@@ -1,6 +1,6 @@
 import db from './db.js';
 import { notifyUser, notifyUsers } from './notify.js';
-import { resolveApprovers, currentStepOfRequest, dailyRecipients, tehranNow, pendingApproversOf, ensureDailyRequest } from './routes/workflows.js';
+import { resolveApprovers, currentStepOfRequest, dailyRecipients, tehranNow, pendingApproversOf, ensureDailyRequest, backfillDailyRequests } from './routes/workflows.js';
 import { flushQueue } from './sms.js';
 import { deptHeads, deptDirectors } from './acl.js';
 import { notifyAudience } from './routes/announcements.js';
@@ -44,7 +44,8 @@ export function checkWorkflowDeadlines() {
   const open = db.prepare(`
     SELECT r.*, t.name AS template_name FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
-    WHERE r.status = 'in_progress' AND r.step_due_at IS NOT NULL`).all();
+    WHERE r.status = 'in_progress' AND r.step_due_at IS NOT NULL
+      AND (r.daily_day IS NULL OR r.daily_day = ?)`).all(tehranNow().date); // درخواستِ روزانهٔ روزهای قبل یادآوری نمی‌شود
   for (const rq of open) {
     const due = new Date(rq.step_due_at).getTime();
     const lastReminded = rq.last_reminded_at ? new Date(rq.last_reminded_at).getTime() : 0;
@@ -432,6 +433,9 @@ export function rescheduleExact() {
 }
 
 export function startReminderEngine() {
+  // یک‌بار در شروع: روزهای گذشتهٔ فرآیندهای روزانه هم درخواست داشته باشند (برای پیگیری/نمودار/چاپ)
+  try { const n = backfillDailyRequests(); if (n) console.log(`✅ ${n} درخواستِ روزانه از پاسخ‌های قبلی ساخته شد`); }
+  catch (e) { console.error('daily backfill error:', e.message); }
   // کارهای «دقیق‌زمان» با زمان‌بندِ بالا؛ این حلقه فقط برای مهلت‌ها و CRM است که دقیقه‌ای حساس نیستند
   const tick = () => {
     try { checkWorkflowDeadlines(); checkTaskDeadlines(); }
