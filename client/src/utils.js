@@ -159,7 +159,8 @@ export async function printRequest(req, statusLabel = '', settings = {}) {
     </div>`;
   }).join('');
   // امضای درخواست‌دهنده — فقط اگر در فرم فعال باشد
-  const requesterBox = req.requester_signature === 0 ? '' : `<div class="sign-box">
+  // جای امضای درخواست‌دهنده فقط وقتی که واقعاً امضایی هست (نه برای درخواست‌های خودکارِ روزانه یا فرآیندی که لازم ندارد)
+  const requesterBox = (req.requester_signature === 0 || !requesterSig || req.daily_day) ? '' : `<div class="sign-box">
     ${requesterSig ? sigImg(requesterSig) : '<div class="sig-empty">&nbsp;</div>'}
     <div class="sign-name">${esc(req.requester_name)}</div>
     <div class="sign-role">درخواست‌دهنده${req.requester_department ? ' · ' + esc(req.requester_department) : ''}</div>

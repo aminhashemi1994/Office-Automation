@@ -732,11 +732,11 @@ export default function RequestDetail() {
             <p style={{ fontSize: 13, marginTop: 0 }}>پاسخ شما: <b>{opt.label}</b></p>
           )}
           {confirm === 'approve' && req.parallel && (
-            <Field label="امضای شما (اختیاری)"><MySignature signed={sign} onChange={setSign} /></Field>
+            <Field label="امضای شما"><MySignature auto /></Field>
           )}
           {confirm === 'approve' && !req.can_final && !req.parallel
             && req.steps.find(st => st.step_order === req.current_step)?.requires_signature !== 0 && (
-            <Field label="امضای شما"><MySignature signed={sign} onChange={setSign} /></Field>
+            <Field label="امضای شما"><MySignature auto /></Field>
           )}
           <Field label={confirm === 'reject' ? 'توضیحات (اختیاری)' : opt?.kind === 'report' ? 'شرح (الزامی)' : 'پی‌نوشت (اختیاری)'}>
             <textarea className="input" value={comment} onChange={e => setComment(e.target.value)} autoFocus

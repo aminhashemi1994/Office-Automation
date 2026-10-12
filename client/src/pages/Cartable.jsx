@@ -306,7 +306,7 @@ export default function Cartable() {
             <button className="btn btn-ghost" onClick={() => setQuick(null)}>انصراف</button>
             <Link className="btn btn-ghost" to={`/cartable/${quick.row.id}`}>دیدن جزئیات</Link>
             <button className="btn btn-primary" disabled={busy || (quick.option?.kind === 'report' && !quick.comment.trim())} onClick={quickApprove}>
-              <Check size={16} /> {quick.row.parallel ? (quick.sign ? 'ثبت و امضا' : 'ثبت پاسخ') : quick.sign ? 'تایید و امضا' : 'تایید'}
+              <Check size={16} /> {quick.row.parallel ? 'ثبت پاسخ' : quick.row.step_requires_signature ? 'تایید و امضا' : 'تایید'}
             </button>
           </>}>
           <div className="req-meta">
@@ -315,7 +315,7 @@ export default function Cartable() {
             <span>درخواست‌دهنده: <b>{quick.row.requester_name}</b></span>
           </div>
           {quick.row.step_requires_signature || quick.row.parallel ? (
-            <Field label="امضای شما"><MySignature signed={!!quick.sign} onChange={v => setQuick(q => ({ ...q, sign: v }))} /></Field>
+            <Field label="امضای شما"><MySignature auto /></Field>
           ) : null}
           <Field label={quick.option?.kind === 'report' ? 'شرح (الزامی)' : 'پی‌نوشت (اختیاری)'}>
             <textarea className="input" value={quick.comment} autoFocus
@@ -330,14 +330,14 @@ export default function Cartable() {
             <button className="btn btn-ghost" onClick={() => setCiConfirm(null)}>انصراف</button>
             <button className="btn btn-primary" disabled={busy || (ciConfirm.option.kind === 'report' && !ciConfirm.comment.trim())}
               onClick={() => submitCheckin(ciConfirm.item, ciConfirm.option, { comment: ciConfirm.comment, sign: !!ciConfirm.sign })}>
-              <Check size={16} /> {ciConfirm.sign ? 'ثبت و امضا' : 'ثبت'}
+              <Check size={16} /> {ciConfirm.item.requires_signature ? 'ثبت و امضا' : 'ثبت'}
             </button>
           </>}>
           <p style={{ fontSize: 13, marginTop: 0 }}>
             پاسخِ امروزِ شما برای «{ciConfirm.item.template_name}»: <b>{ciConfirm.option.label}</b>
           </p>
           {ciConfirm.item.requires_signature ? (
-            <Field label="امضای شما"><MySignature signed={!!ciConfirm.sign} onChange={v => setCiConfirm(q => ({ ...q, sign: v }))} /></Field>
+            <Field label="امضای شما"><MySignature auto /></Field>
           ) : null}
           <Field label={ciConfirm.option.kind === 'report' ? 'شرح (الزامی)' : 'توضیح (اختیاری)'}>
             <textarea className="input" value={ciConfirm.comment} autoFocus={ciConfirm.option.kind === 'report'}
@@ -493,7 +493,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
         <button className="btn btn-ghost" onClick={onClose}>انصراف</button>
         {confirmOnly ? (
           <button className="btn btn-primary" disabled={busy || (mod?.kind === 'report' && !modNote.trim())} onClick={submitModule}>
-            <Check size={16} /> {modSign ? 'ثبت و امضا' : 'ثبت'}
+            <Check size={16} /> {tpl?.requester_signature !== 0 ? 'ثبت و امضا' : 'ثبت'}
           </button>
         ) : (
           <button className="btn btn-primary" disabled={!tpl || !title.trim() || busy} onClick={submit}>ثبت درخواست</button>
@@ -541,7 +541,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
 
       {confirmOnly ? (
         <>
-          {tpl?.requester_signature !== 0 && <Field label="امضای شما"><MySignature signed={modSign} onChange={setModSign} /></Field>}
+          {tpl?.requester_signature !== 0 && <Field label="امضای شما"><MySignature auto /></Field>}
           <Field label={mod?.kind === 'report' ? 'شرح (الزامی)' : 'توضیح (اختیاری)'}>
             <textarea className="input" value={modNote} onChange={e => setModNote(e.target.value)} />
           </Field>

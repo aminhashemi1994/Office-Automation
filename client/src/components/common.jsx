@@ -292,7 +292,8 @@ export function Segmented({ value, onChange, options, size = 'md' }) {
 // پیش‌نمایشِ امضای خودِ کاربر هنگام تایید — تا بداند همین امضا در سند چاپی می‌نشیند
 // [امضای دستی] امضا خودکار درج نمی‌شود؛ کاربر خودش «درج امضا» را می‌زند.
 // signed / onChange از والد می‌آید و همراهِ اقدام به‌صورت sign فرستاده می‌شود.
-export function MySignature({ signed, onChange }) {
+// auto = امضا خودکار درج می‌شود (مرحلهٔ «با امضا»)؛ فقط نمایش، بدون دکمه.
+export function MySignature({ signed, onChange, auto = false }) {
   const { user } = useStore();
   if (!user?.has_signature) {
     return (
@@ -302,6 +303,14 @@ export function MySignature({ signed, onChange }) {
           <b>امضای تصویری ثبت نکرده‌اید.</b> ثبتِ شما انجام می‌شود، ولی جای امضا در سند چاپی خالی می‌ماند.
           امضای خود را از «پروفایل من» بارگذاری کنید.
         </div>
+      </div>
+    );
+  }
+  if (auto) {
+    return (
+      <div className="sig-box">
+        <img src={`/api/users/${user.id}/signature?token=${encodeURIComponent(getToken())}`} alt="امضای شما" />
+        <span className="sig-note">این امضا پای ثبتِ شما در سند درج می‌شود.</span>
       </div>
     );
   }

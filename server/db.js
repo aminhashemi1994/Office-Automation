@@ -1312,6 +1312,15 @@ try { db.exec('ALTER TABLE workflow_actions ADD COLUMN signed INTEGER'); } catch
 try { db.exec('ALTER TABLE workflow_actions ADD COLUMN on_behalf_id INTEGER'); } catch {}
 // [امضای دستیِ درخواست‌دهنده] ۱ = هنگام ثبت «درج امضا» زده است؛ NULL = درخواست‌های قدیمی (مثل قبل درج می‌شود)
 try { db.exec('ALTER TABLE workflow_requests ADD COLUMN requester_signed INTEGER'); } catch {}
+// [امضای خودکار — بازگشت] در دوره‌ای که امضا فقط با «درج امضا» ثبت می‌شد، بیشترِ تاییدها بی‌امضا ماندند.
+// یک‌بار: آن تاییدها دوباره امضاشده حساب شوند (NULL = طبقِ مرحله، مثل قبل). امضا فقط برای مرحلهٔ «با امضا»
+// و فقط اگر شخص امضای ثبت‌شده داشته باشد در سند می‌آید.
+if (db.prepare("SELECT value FROM app_settings WHERE key = 'auto_sign_restored'").get()?.value !== '1') {
+  try {
+    db.exec("UPDATE workflow_actions SET signed = NULL WHERE action = 'approve' AND signed = 0");
+    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('auto_sign_restored', '1')").run();
+  } catch (e) { console.error('auto-sign restore:', e.message); }
+}
 // [درخواستِ روزانه] برای فرآیندهای روزانهٔ موازی، هر روز یک درخواست ساخته می‌شود (تاریخِ تهران، YYYY-MM-DD)
 try { db.exec('ALTER TABLE workflow_requests ADD COLUMN daily_day TEXT'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_wr_daily ON workflow_requests(template_id, daily_day)'); } catch {}

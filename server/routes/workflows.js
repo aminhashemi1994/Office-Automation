@@ -697,7 +697,8 @@ export function backfillDailyRequests() {
         VALUES (?, ?, ?, 'approve', ?, '[]', ?, ?)`);
       for (const c of db.prepare(`SELECT * FROM workflow_checkins WHERE template_id = ? AND day = ? AND responded_at IS NOT NULL
           AND request_id IS NULL ORDER BY responded_at`).all(t.id, day)) {
-        ins.run(rq.id, steps[0].step_order, c.user_id, `${c.option_label || ''}${c.comment ? ' — ' + c.comment : ''}`, c.signed ? 1 : 0, c.responded_at);
+        // signed = NULL → امضا طبقِ مرحله (خودکار)
+        ins.run(rq.id, steps[0].step_order, c.user_id, `${c.option_label || ''}${c.comment ? ' — ' + c.comment : ''}`, null, c.responded_at);
         db.prepare('UPDATE workflow_checkins SET request_id = ? WHERE id = ?').run(rq.id, c.id);
       }
       // روزِ گذشته بسته است: اگر همه پاسخ داده‌اند «تایید نهایی»، وگرنه «در جریان» می‌ماند تا معلوم باشد چه کسی پاسخ نداده
@@ -730,7 +731,9 @@ function actParallel(rq, tpl, user, { option_key, comment = '', sign = false, at
   // گزینهٔ «هشدار» (مثل رخ داد) بدونِ شرح بی‌معناست
   if (opt?.kind === 'report' && !note) return { error: `برای «${opt.label}» نوشتنِ شرح الزامی است` };
   const text = `${forName ? `(به نیابت از ${forName}) ` : ''}${opt ? `${opt.label}${note ? ' — ' + note : ''}` : note}`;
-  const signed = !!sign && !!db.prepare("SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(user.id);
+  // امضا: اگر مرحله «با امضا» است، امضای ثبت‌شدهٔ شخص خودکار درج می‌شود
+  const signed = (!!sign || mine.some(s => s.requires_signature !== 0))
+    && !!db.prepare("SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(user.id);
   const ins = db.prepare(`INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment, attachments, signed, on_behalf_id)
     VALUES (?, ?, ?, 'approve', ?, ?, ?, ?)`);
   // یک پاسخ برای این شخص — حتی اگر در چند مرحله نامش آمده باشد
@@ -1972,7 +1975,8 @@ r.post('/requests/:id/action', (req, res) => {
 
   const logged = logAction(action, isDeputy ? `(به نیابت) ${comment}`.trim() : comment);
   // [امضای دستی] امضا فقط وقتی درج می‌شود که خودِ تاییدکننده «درج امضا» را زده باشد
-  const signedNow = action === 'approve' && !finalStage && step.requires_signature !== 0 && !!req.body?.sign
+  // مرحلهٔ «با امضا» → امضای ثبت‌شدهٔ تاییدکننده خودکار درج می‌شود
+  const signedNow = action === 'approve' && !finalStage && step.requires_signature !== 0
     && !!db.prepare("SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(req.user.id);
   if (action === 'approve') db.prepare('UPDATE workflow_actions SET signed = ? WHERE id = ?').run(signedNow ? 1 : 0, logged.lastInsertRowid);
 
@@ -2366,7 +2370,7 @@ r.post('/checkins', (req, res) => {
       return res.json({ ok: true, request_id: open.id, ...out });
     }
   }
-  const signed = !!sign && t.requester_signature !== 0 && !!db.prepare(
+  const signed = (!!sign || (getSteps(t.id)[0]?.requires_signature ?? 1) !== 0) && !!db.prepare(
     "SELECT 1 FROM users WHERE id = ? AND signature_path IS NOT NULL AND signature_path != ''").get(req.user.id);
   db.prepare(`INSERT INTO workflow_checkins (template_id, user_id, day, seen_at, responded_at, option_key, option_label, comment, signed, request_id)
     VALUES (?, ?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?)
