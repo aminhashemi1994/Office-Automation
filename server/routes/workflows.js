@@ -273,13 +273,16 @@ function resolveSpec(spec, requester, requesterId) {
     return u ? [u.id] : [];
   }
   // «سرگروه/مدیرِ واحدِ درخواست‌دهنده» — سه حالت: هر دو، فقط سرگروه، فقط مدیر
+  // اگر درخواست‌دهنده خودش تنها سرگروهِ واحد باشد (کسی خودش را تایید نمی‌کند)، به مدیرِ واحد می‌رود —
+  // قبلاً خالی می‌ماند و درخواست به مدیر سامانه می‌رفت و در کارتابلِ هیچ مسئولی دیده نمی‌شد.
   if (spec.approver_type === 'requester_manager') {
     if (requester?.department_id) return deptManagers(requester.department_id).filter(id => id !== requesterId);
     return [];
   }
   if (spec.approver_type === 'requester_head') {
-    if (requester?.department_id) return deptHeads(requester.department_id).filter(id => id !== requesterId);
-    return [];
+    if (!requester?.department_id) return [];
+    const heads = deptHeads(requester.department_id).filter(id => id !== requesterId);
+    return heads.length ? heads : deptDirectors(requester.department_id).filter(id => id !== requesterId);
   }
   if (spec.approver_type === 'requester_director') {
     if (requester?.department_id) return deptDirectors(requester.department_id).filter(id => id !== requesterId);
@@ -1445,6 +1448,11 @@ r.post('/requests/:id/ack', (req, res) => {
 });
 
 // خلاصهٔ وضعیتِ مرحلهٔ فعلی برای فهرست‌ها: seen | received | null (دیده‌نشده)
+// محاسبه‌ای که اگر برای یک درخواست خطا داد، کلِ فهرست از کار نیفتد
+function safe(fn, fallback = null) {
+  try { return fn(); } catch (e) { console.error('list item:', e.message); return fallback; }
+}
+
 function watchSummary(rq) {
   if (rq.status === 'in_progress' && isParallel(rq)) {
     const ppl = parallelPeople(rq).filter(p => !p.answered_at);
@@ -1592,7 +1600,10 @@ r.get('/requests/inbox', (req, res) => {
     JOIN users u ON u.id = r.requester_id
     WHERE r.status IN ('in_progress', 'awaiting_requester', 'returned') ORDER BY r.id DESC`).all();
   const today = tehranNow().date;
-  const inbox = open.filter(rq => {
+  // هر درخواست جدا بررسی می‌شود: یک درخواستِ خراب (مثلاً مرحله/کاربرِ حذف‌شده) نباید کلِ کارتابل را خالی کند
+  const inbox = open.filter(rq => { try { return inInbox(rq); } catch (e) {
+    console.error(`inbox: request ${rq.id} skipped:`, e.message); return false; } });
+  function inInbox(rq) {
     if (rq.status !== 'in_progress') return rq.requester_id === req.user.id;
     if (isParallel(rq)) {
       // درخواستِ روزانهٔ روزهای قبل دیگر در کارتابلِ پاسخ‌دهندگان نمی‌ماند (در «پیگیری» دیده می‌شود)
@@ -1600,8 +1611,8 @@ r.get('/requests/inbox', (req, res) => {
       return myParallelSteps(rq, req.user.id).length > 0;
     }
     const step = currentStepOf(rq);
-    return step && resolveApprovers(step, rq.requester_id).includes(req.user.id);
-  });
+    return !!step && resolveApprovers(step, rq.requester_id).includes(req.user.id);
+  }
   // [پرسش و پاسخ] درخواست‌هایی که پرسشِ بی‌پاسخی از من دارند هم در کارتابل می‌آیند
   const qRows = db.prepare(`SELECT q.request_id, COUNT(*) c FROM workflow_actions q
     WHERE q.action = 'question' AND q.target_user_id = ?
@@ -1619,7 +1630,7 @@ r.get('/requests/inbox', (req, res) => {
     for (const rq of extra) if (!have.has(rq.id)) inbox.push(rq);
     inbox.sort((a, b) => b.id - a.id);
   }
-  const result = inbox.map(rq => {
+  const result = inbox.map(rq => { try {
     // [تایید سریع] اگر من مسئولِ مرحلهٔ فعلی‌ام، از همین کارتابل می‌توانم تایید (و امضا) کنم
     const par = rq.status === 'in_progress' && have.has(rq.id) && isParallel(rq);
     const cur = rq.status === 'in_progress' && have.has(rq.id) && !par ? currentStepOf(rq) : null;
@@ -1637,7 +1648,11 @@ r.get('/requests/inbox', (req, res) => {
       : rq.status === 'in_progress' ? currentStepOf(rq)?.title
       : rq.status === 'awaiting_requester' ? 'تایید نهایی شما' : 'اصلاح و ارسال مجدد',
     attachments_count: attachmentCount(rq),
-  }; });
+  }; } catch (e) {
+    // حداقل دیده شود، حتی اگر جزئیاتش محاسبه نشد
+    console.error(`inbox: request ${rq.id} details failed:`, e.message);
+    return { ...rq, can_quick_approve: false, step_title: '' };
+  } });
   res.json({ requests: result });
 });
 
@@ -1646,7 +1661,7 @@ r.get('/requests/mine', (req, res) => {
     SELECT r.*, t.name AS template_name FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
     WHERE r.requester_id = ? ORDER BY r.id DESC`).all(req.user.id)
-    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq), step_watch: watchSummary(rq), progress: progressOf(rq) }));
+    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq), step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)) }));
   res.json({ requests });
 });
 
@@ -1668,7 +1683,7 @@ r.get('/requests/following', (req, res) => {
     JOIN users us ON us.id = r.requester_id
     WHERE t.owner_user_id = @uid OR t.created_by = @uid ORDER BY r.id DESC LIMIT 300`).all({ uid: req.user.id })
     .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq),
-      step_watch: watchSummary(rq), progress: progressOf(rq) }));
+      step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)) }));
   // سازنده/پیگیرِ حداقل یک فرآیند → تبِ «پیگیری فرآیندها» همیشه دیده شود، حتی پیش از اولین درخواست
   const follows = !!db.prepare('SELECT 1 FROM workflow_templates WHERE owner_user_id = ? OR created_by = ? LIMIT 1')
     .get(req.user.id, req.user.id);

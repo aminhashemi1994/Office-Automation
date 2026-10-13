@@ -52,10 +52,12 @@ export default function Cartable() {
     || !!myDept?.is_management;
 
   const load = async () => {
+    // هر بخش جدا: اگر یکی خطا داد، بقیهٔ کارتابل خالی نماند و خطا دیده شود
+    const fail = (what, fb) => (e) => { toast(`${what}: ${e.message}`, 'error'); return fb; };
     const [i, m, t, f] = await Promise.all([
-      api('/workflows/requests/inbox'),
-      api('/workflows/requests/mine'),
-      api('/workflows/templates'),
+      api('/workflows/requests/inbox').catch(fail('بارگذاری «در انتظار اقدام من»', { requests: [] })),
+      api('/workflows/requests/mine').catch(fail('بارگذاری «درخواست‌های من»', { requests: [] })),
+      api('/workflows/templates').catch(fail('بارگذاری فرآیندها', { templates: [] })),
       api('/workflows/requests/following').catch(() => ({ requests: [] })),
     ]);
     const ci = await api('/workflows/checkins/today').catch(() => ({ items: [], pending: 0 }));
@@ -67,8 +69,8 @@ export default function Cartable() {
       && !i.requests.some(r => r.template_id === c.template_id && r.parallel && r.can_quick_approve)).length);
     setTemplates(t.templates.filter(x => x.is_active));
     if (canBuild) {
-      const a = await api('/workflows/requests/all');
-      setAll(a.requests);
+      const a = await api('/workflows/requests/all').catch(() => ({ requests: [] }));
+      setAll(a.requests || []);
     }
   };
   useEffect(() => { load(); return on('notification', load); }, []);
