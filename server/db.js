@@ -1315,6 +1315,16 @@ try { db.exec('ALTER TABLE workflow_requests ADD COLUMN requester_signed INTEGER
 // [امضای خودکار — بازگشت] در دوره‌ای که امضا فقط با «درج امضا» ثبت می‌شد، بیشترِ تاییدها بی‌امضا ماندند.
 // یک‌بار: آن تاییدها دوباره امضاشده حساب شوند (NULL = طبقِ مرحله، مثل قبل). امضا فقط برای مرحلهٔ «با امضا»
 // و فقط اگر شخص امضای ثبت‌شده داشته باشد در سند می‌آید.
+// [نقش «مدیر واحد»] یک‌بار: کسی که نقشِ قدیمیِ «سرگروه» دارد ولی در واحدِ خودش صریحاً «مدیر» ثبت شده
+// (و سرگروهِ آن ثبت نشده)، نقشِ «مدیر واحد» می‌گیرد تا دیگر سرگروه هم حساب نشود.
+if (db.prepare("SELECT value FROM app_settings WHERE key = 'director_role_migrated'").get()?.value !== '1') {
+  try {
+    db.exec(`UPDATE users SET role = 'director' WHERE role = 'manager' AND department_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM department_managers m WHERE m.user_id = users.id AND m.department_id = users.department_id AND m.position = 'director')
+      AND NOT EXISTS (SELECT 1 FROM department_managers m WHERE m.user_id = users.id AND m.department_id = users.department_id AND m.position = 'head')`);
+    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('director_role_migrated', '1')").run();
+  } catch (e) { console.error('director role migrate:', e.message); }
+}
 if (db.prepare("SELECT value FROM app_settings WHERE key = 'auto_sign_restored'").get()?.value !== '1') {
   try {
     db.exec("UPDATE workflow_actions SET signed = NULL WHERE action = 'approve' AND signed = 0");

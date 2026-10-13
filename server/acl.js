@@ -30,12 +30,16 @@ export function deptPositionHolders(deptId, position) {
   // قاعده‌های قدیمی (مدیرِ اصلی = مدیر، نقشِ manager = سرگروه) فقط برای واحدی که هنوز هیچ سِمَتِ
   // صریحی برایش ثبت نشده. وقتی سِمَت‌ها دستی مشخص شده‌اند، همان ملاک است — وگرنه سامانه
   // سرگروه را مدیر (یا برعکس) حساب می‌کرد.
+  // نقشِ کاربر در واحدِ خودش همیشه معتبر است: «مدیر واحد» = مدیر، «سرگروه» = سرگروه
+  // (قبلاً با ثبتِ صریحِ یک سِمَت در واحد، سرگروه‌هایی که فقط نقش داشتند نادیده گرفته می‌شدند
+  //  و درخواستشان به مدیر سامانه می‌رفت)
+  const roleOf = position === 'director' ? 'director' : 'manager';
+  for (const row of db.prepare('SELECT id FROM users WHERE department_id = ? AND role = ? AND is_active = 1').all(deptId, roleOf)) ids.add(row.id);
   if (hasExplicitPositions(deptId)) return [...ids].filter(isActive);
   if (position === 'director') {
     // «مدیرِ اصلیِ واحد» در جدول departments هم همان مدیر است
     const dept = db.prepare('SELECT manager_id FROM departments WHERE id = ?').get(deptId);
     if (dept?.manager_id) ids.add(dept.manager_id);
-    for (const row of db.prepare("SELECT id FROM users WHERE department_id = ? AND role = 'director' AND is_active = 1").all(deptId)) ids.add(row.id);
   }
   if (position === 'head') {
     // سازگاری با گذشته: کاربرِ نقش‌دارِ manager در یک واحد، سرگروهِ همان واحد است
@@ -66,7 +70,11 @@ export function positionsOf(userId) {
     }
   }
   const u = db.prepare('SELECT department_id, role FROM users WHERE id = ?').get(userId);
-  if (u?.role === 'manager' && u.department_id && !hasExplicitPositions(u.department_id)
+  if (u?.role === 'director' && u.department_id
+    && !out.some(x => x.department_id === u.department_id && x.position === 'director')) {
+    out.push({ department_id: u.department_id, position: 'director' });
+  }
+  if (u?.role === 'manager' && u.department_id
     && !out.some(x => x.department_id === u.department_id && x.position === 'head')) {
     out.push({ department_id: u.department_id, position: 'head' });
   }

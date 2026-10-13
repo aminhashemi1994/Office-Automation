@@ -1190,12 +1190,13 @@ export function dailyRecipients(cfg) {
 }
 
 // [مسئول پیگیری] خبر دادن به مسئولِ پیگیریِ فرآیند. final=true یعنی نتیجهٔ نهایی (تایید/رد).
+// اعلان‌های «مرحله‌به‌مرحله» فقط برای سازنده و مسئولِ پیگیریِ فرآیند است (نه همه)، تا اعلان‌ها شلوغ نشود.
 function notifyOwner(rq, tplId, actorId, { final = false, title, body }) {
-  const t = db.prepare('SELECT owner_user_id, owner_notify FROM workflow_templates WHERE id = ?').get(tplId);
-  if (!t?.owner_user_id || t.owner_notify === 'off') return;
+  const t = db.prepare('SELECT owner_user_id, owner_notify, created_by FROM workflow_templates WHERE id = ?').get(tplId);
+  if (!t || t.owner_notify === 'off') return;
   if (!final && t.owner_notify !== 'each') return;
-  if (t.owner_user_id === actorId) return;
-  notifyUsers([t.owner_user_id], { type: 'workflow', title, body, link: `/cartable/${rq.id}` });
+  const ids = [...new Set([t.owner_user_id, t.created_by].filter(Boolean))].filter(id => id !== actorId);
+  if (ids.length) notifyUsers(ids, { type: 'workflow', title, body, link: `/cartable/${rq.id}` });
 }
 
 // [پیشرفت] چند مرحله از چند مرحله طی شده است
@@ -1469,23 +1470,11 @@ r.post('/requests/:id/receive', (req, res) => {
   const note = String(req.body?.note || '').trim().slice(0, 500);
   db.prepare('INSERT INTO workflow_actions (request_id, step_order, actor_id, action, comment) VALUES (?, ?, ?, ?, ?)')
     .run(rq.id, rq.current_step, req.user.id, 'receive', note);
-  if (rq.requester_id !== req.user.id) {
-    notifyUsers([rq.requester_id], {
-      type: 'workflow',
-      title: 'درخواست شما دریافت شد',
-      body: `${req.user.full_name} «${rq.title}» را در مرحلهٔ «${step.title}» دریافت کرد${note ? ' — ' + note.slice(0, 120) : ''}`,
-      link: `/cartable/${rq.id}`,
-    });
-  }
-  if (rq.requester_id !== req.user.id) {
-    const owner = db.prepare('SELECT owner_user_id FROM workflow_templates WHERE id = ?').get(rq.template_id)?.owner_user_id;
-    if (owner !== rq.requester_id) {
-      notifyOwner(rq, rq.template_id, req.user.id, {
-        title: 'درخواست دریافت شد',
-        body: `${req.user.full_name} «${rq.title}» را در مرحلهٔ «${step.title}» دریافت کرد${note ? ' — ' + note.slice(0, 120) : ''}`,
-      });
-    }
-  }
+  // «دریافت شد» یک اعلانِ مرحله‌ای است → فقط سازنده و مسئولِ پیگیری
+  notifyOwner(rq, rq.template_id, req.user.id, {
+    title: 'درخواست دریافت شد',
+    body: `${req.user.full_name} «${rq.title}» را در مرحلهٔ «${step.title}» دریافت کرد${note ? ' — ' + note.slice(0, 120) : ''}`,
+  });
   res.json({ ok: true });
 });
 
@@ -2046,12 +2035,7 @@ r.post('/requests/:id/action', (req, res) => {
     body: `«${rq.title}» به مرحله «${next.title}» رسید و در انتظار اقدام شماست`,
     link: `/cartable/${rq.id}`,
   });
-  notifyUsers([rq.requester_id], {
-    type: 'workflow',
-    title: `پیشرفت درخواست: ${tpl.name}`,
-    body: `«${rq.title}» در مرحله «${step.title}» تایید شد و به «${next.title}» رفت${attNote}`,
-    link: `/cartable/${rq.id}`,
-  });
+  // پیشرفتِ مرحله‌به‌مرحله فقط به سازنده/پیگیر می‌رود (بالا با notifyOwner)؛ درخواست‌دهنده نتیجهٔ نهایی را می‌گیرد
   res.json({ ok: true, status: 'in_progress' });
 });
 
