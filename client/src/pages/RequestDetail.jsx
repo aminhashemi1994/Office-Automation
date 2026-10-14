@@ -420,6 +420,25 @@ export default function RequestDetail() {
                 {req.status === 'in_progress' ? 'الان روی مرحلهٔ برجسته است' : ''}
               </span>
             </div>
+            {/* [عیب‌یابی] فقط برای مدیر سامانه و سازنده/پیگیر */}
+            {req.diagnosis && (
+              <div className="panel-soft card-pad" style={{ marginBottom: 12, borderInlineStart: `3px solid ${req.diagnosis.fallback ? 'var(--red)' : 'var(--primary)'}` }}>
+                <b style={{ fontSize: 12.8 }}>این درخواست الان منتظرِ کیست؟</b>
+                <div style={{ fontSize: 12.3, color: 'var(--text-2)', marginTop: 4, lineHeight: 1.9 }}>
+                  {req.diagnosis.step && <>مرحله: <b>{req.diagnosis.step}</b> · </>}
+                  قاعده: {req.diagnosis.rule}
+                  <br />
+                  {req.diagnosis.waiting.length
+                    ? <>در کارتابلِ این افراد است: <b>{req.diagnosis.waiting.join('، ')}</b></>
+                    : 'هیچ‌کس'}
+                  {req.diagnosis.fallback && (
+                    <div style={{ color: 'var(--red)' }}>
+                      این مرحله مسئولِ واقعی ندارد و فقط به مدیر سامانه رسیده است. تعریفِ مرحله یا اعضا/سِمَت‌های واحد را بررسی کنید.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
             {req.orphan_steps?.length > 0 && (
               <div className="panel-soft card-pad" style={{ marginBottom: 12, borderInlineStart: '3px solid var(--red)' }}>
                 <b style={{ fontSize: 12.8, color: 'var(--red)' }}>مرحله‌ای بدون مسئول</b>

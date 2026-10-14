@@ -863,7 +863,25 @@ function requestDetail(id, userId) {
       return { ...v, last_action: la ? { action: la.action, created_at: la.created_at } : null };
     });
   const step_watch = parallel ? null : currentStepWatch(req_);
+  // [عیب‌یابی] برای مدیر سامانه و سازنده/پیگیرِ فرآیند: الان منتظرِ چه کسی است و چرا
+  let diagnosis = null;
+  const tplOwn = db.prepare('SELECT created_by, owner_user_id FROM workflow_templates WHERE id = ?').get(req_.template_id);
+  if (viewer && (viewer.role === 'admin' || tplOwn?.created_by === userId || tplOwn?.owner_user_id === userId) && req_.status === 'in_progress') {
+    try {
+      const nameOf = (id) => db.prepare('SELECT full_name FROM users WHERE id = ?').get(id)?.full_name || `#${id}`;
+      if (parallel) {
+        diagnosis = { rule: 'گردش بدون ترتیب', waiting: pendingApproversOf(req_).map(nameOf), fallback: false };
+      } else if (cur) {
+        const real = resolveApprovers(cur, req_.requester_id, { fallback: false });
+        diagnosis = { step: cur.title, rule: describeApprover(cur),
+          waiting: (real.length ? real : resolveApprovers(cur, req_.requester_id)).map(nameOf), fallback: !real.length };
+      } else {
+        diagnosis = { step: `مرحلهٔ ${req_.current_step}`, rule: 'این مرحله در تعریفِ فرآیند وجود ندارد', waiting: [], fallback: true };
+      }
+    } catch (e) { diagnosis = { rule: 'خطا در محاسبه: ' + e.message, waiting: [], fallback: true }; }
+  }
   return {
+    diagnosis,
     parallel: parallel ? 1 : 0,
     parallel_people: parallel ? parallelPeople(req_) : undefined,
     quick_options: parallel ? quickOptionsOfTemplate(req_.template_id) : [],

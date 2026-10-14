@@ -219,7 +219,10 @@ export default function Cartable() {
             </thead>
             <tbody>
               {rows.map(r => {
-                const [sl, sc] = STATUS[r.status] || STATUS.in_progress;
+                // در «در انتظار اقدام من»، درخواستِ در جریان برای من یعنی «منتظرِ من» — واضح و رنگی
+                const [sl, sc] = tab === 'inbox' && r.status === 'in_progress' && r.can_quick_approve
+                  ? (r.step_due_at && parseDate(r.step_due_at) < new Date() ? ['مهلت گذشته — منتظر شما', 'badge-red'] : ['در انتظار اقدام شما', 'badge-amber'])
+                  : (STATUS[r.status] || STATUS.in_progress);
                 const overdue = r.status === 'in_progress' && r.step_due_at && parseDate(r.step_due_at) < new Date();
                 return (
                   <React.Fragment key={r.id}>
