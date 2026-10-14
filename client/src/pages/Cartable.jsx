@@ -252,6 +252,12 @@ export default function Cartable() {
                       {r.step_title && (
                         <span style={{ fontSize: 12, color: 'var(--text-2)', marginRight: 6 }}>{r.step_title}</span>
                       )}
+                      {/* منتظرِ چه کسی — تا معلوم باشد درخواست در کارتابلِ کیست */}
+                      {tab !== 'inbox' && r.waiting_for?.length > 0 && (
+                        <div style={{ fontSize: 11.8, color: 'var(--text-3)', marginTop: 3 }}>
+                          منتظرِ: <b style={{ color: 'var(--text-2)' }}>{r.waiting_for.join('، ')}</b>
+                        </div>
+                      )}
                       {/* [ردیابی مرحله] مسئولِ مرحلهٔ فعلی دیده / دریافت کرده؟ */}
                       {r.step_watch && (
                         <span className={`badge ${r.step_watch.received ? 'badge-green' : r.step_watch.seen ? 'badge-sky' : 'badge-gray'}`}
@@ -486,7 +492,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
         on_behalf_name: onBehalfId ? '' : onBehalfName,
         cc, routing, sign: reqSign,
       } });
-      if (r.warning) toast(r.warning, 'error');
+      if (r.warning) window.alert(r.warning); // پیامِ مهم؛ نباید مثل toast از دست برود
       onDone(r.id);
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);

@@ -345,6 +345,35 @@ export function stepHasApprovers(step, requesterId) {
 }
 
 // مراحلی از یک درخواستِ مشخص که مسئولی ندارند (درخواست‌دهنده معلوم است)
+// پیامِ قابل‌فهم برای درخواست‌دهنده: اگر تنها تاییدکنندهٔ ممکن خودش است، صریح گفته شود
+function orphanMessage(orphan, steps, requesterId) {
+  const selfOnly = orphan.filter(o => {
+    const st = steps.find(s => s.step_order === o.step_order);
+    if (!st) return false;
+    // با درخواست‌دهندهٔ دیگری مسئول دارد؟ یعنی فقط خودش بوده که حذف شده
+    return stepSpecs(st).some(sp => (sp.approver_type === 'dept_member' && sp.approver_id
+      && db.prepare('SELECT 1 FROM users WHERE id = ? AND department_id = ?').get(requesterId, sp.approver_id))
+      || (sp.approver_type === 'user' && Number(sp.approver_id) === requesterId)
+      || (['requester_head', 'requester_manager', 'requester_director'].includes(sp.approver_type)));
+  });
+  if (selfOnly.length) {
+    return `شما نمی‌توانید درخواستِ خودتان را تایید کنید و در مرحلهٔ ${selfOnly.map(o => `«${o.title}»`).join('، ')} `
+      + 'کسِ دیگری نیست؛ پس درخواست به مدیر سامانه رفت و در کارتابلِ شما دیده نمی‌شود. '
+      + 'برای آزمایش، درخواست را با حسابِ کاربرِ دیگری ثبت کنید.';
+  }
+  return `این مرحله‌ها هنوز مسئولی ندارند و فعلاً به مدیر سامانه رفتند: ${orphan.map(o => o.title).join('، ')}`;
+}
+
+// [منتظرِ چه کسی] نامِ کسانی که درخواست الان در کارتابلشان است — برای فهرست‌ها
+function waitingFor(rq) {
+  if (rq.status === 'awaiting_requester' || rq.status === 'returned') {
+    return [db.prepare('SELECT full_name FROM users WHERE id = ?').get(rq.requester_id)?.full_name].filter(Boolean);
+  }
+  if (rq.status !== 'in_progress') return [];
+  const ids = isParallel(rq) ? pendingApproversOf(rq) : (() => { const st = currentStepOf(rq); return st ? resolveApprovers(st, rq.requester_id) : []; })();
+  return ids.slice(0, 6).map(id => db.prepare('SELECT full_name FROM users WHERE id = ?').get(id)?.full_name).filter(Boolean);
+}
+
 export function stepsWithoutApprovers(steps, requesterId) {
   return (steps || []).filter(st => !stepHasApprovers(st, requesterId))
     .map(st => ({ step_order: st.step_order, title: st.title, approver_label: describeApprover(st) }));
@@ -1601,9 +1630,7 @@ r.post('/requests', (req, res) => {
   res.json({
     id: requestId,
     // کلاینت این را به کاربر نشان می‌دهد؛ درخواست ثبت شده ولی مسیرش سالم نیست
-    warning: orphan.length
-      ? `این مرحله‌ها هنوز مسئولی ندارند و فعلاً به مدیر سامانه رفتند: ${orphan.map(o => o.title).join('، ')}`
-      : undefined,
+    warning: orphan.length ? orphanMessage(orphan, steps, req.user.id) : undefined,
   });
 });
 
@@ -1679,7 +1706,7 @@ r.get('/requests/mine', (req, res) => {
     SELECT r.*, t.name AS template_name FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
     WHERE r.requester_id = ? ORDER BY r.id DESC`).all(req.user.id)
-    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq), step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)) }));
+    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq), step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)), waiting_for: safe(() => waitingFor(rq), []) }));
   res.json({ requests });
 });
 
@@ -1701,7 +1728,7 @@ r.get('/requests/following', (req, res) => {
     JOIN users us ON us.id = r.requester_id
     WHERE t.owner_user_id = @uid OR t.created_by = @uid ORDER BY r.id DESC LIMIT 300`).all({ uid: req.user.id })
     .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq),
-      step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)) }));
+      step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)), waiting_for: safe(() => waitingFor(rq), []) }));
   // سازنده/پیگیرِ حداقل یک فرآیند → تبِ «پیگیری فرآیندها» همیشه دیده شود، حتی پیش از اولین درخواست
   const follows = !!db.prepare('SELECT 1 FROM workflow_templates WHERE owner_user_id = ? OR created_by = ? LIMIT 1')
     .get(req.user.id, req.user.id);
@@ -1741,8 +1768,9 @@ r.get('/requests/all', (req, res) => {
     ...rq,
     step_title: stepLabelOf(rq),
     attachments_count: attachmentCount(rq),
-    step_watch: watchSummary(rq),
-    progress: progressOf(rq),
+    step_watch: safe(() => watchSummary(rq)),
+    progress: safe(() => progressOf(rq)),
+    waiting_for: safe(() => waitingFor(rq), []),
   }));
   res.json({ requests, scoped: !canAccessEverywhere(u) });
 });
