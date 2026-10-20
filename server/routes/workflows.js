@@ -364,6 +364,19 @@ function orphanMessage(orphan, steps, requesterId) {
   return `این مرحله‌ها هنوز مسئولی ندارند و فعلاً به مدیر سامانه رفتند: ${orphan.map(o => o.title).join('، ')}`;
 }
 
+// [مسیرِ گردش] خلاصهٔ مراحل برای فهرست‌های کارتابل: انجام‌شده / مرحلهٔ فعلی / در نوبت
+function routeOf(rq, userId) {
+  if (isParallel(rq)) return null; // گردشِ بدون ترتیب نمودارِ خودش را دارد
+  return requestSteps(rq).map(st => {
+    const state = rq.status === 'approved' || rq.status === 'awaiting_requester' ? 'done'
+      : rq.status === 'rejected' || rq.status === 'cancelled' ? (st.step_order < rq.current_step ? 'done' : 'pending')
+      : st.step_order < rq.current_step ? 'done' : st.step_order === rq.current_step ? 'current' : 'pending';
+    const mine = state === 'current' && rq.status === 'in_progress' && !!userId
+      && resolveApprovers(st, rq.requester_id).includes(userId);
+    return { title: st.title, state, mine };
+  });
+}
+
 // [منتظرِ چه کسی] نامِ کسانی که درخواست الان در کارتابلشان است — برای فهرست‌ها
 function waitingFor(rq) {
   if (rq.status === 'awaiting_requester' || rq.status === 'returned') {
@@ -1693,6 +1706,7 @@ r.get('/requests/inbox', (req, res) => {
       : rq.status === 'in_progress' ? currentStepOf(rq)?.title
       : rq.status === 'awaiting_requester' ? 'تایید نهایی شما' : 'اصلاح و ارسال مجدد',
     attachments_count: attachmentCount(rq),
+    route: safe(() => routeOf(rq, req.user.id)),
   }; } catch (e) {
     // حداقل دیده شود، حتی اگر جزئیاتش محاسبه نشد
     console.error(`inbox: request ${rq.id} details failed:`, e.message);
@@ -1706,7 +1720,7 @@ r.get('/requests/mine', (req, res) => {
     SELECT r.*, t.name AS template_name FROM workflow_requests r
     JOIN workflow_templates t ON t.id = r.template_id
     WHERE r.requester_id = ? ORDER BY r.id DESC`).all(req.user.id)
-    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq), step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)), waiting_for: safe(() => waitingFor(rq), []) }));
+    .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq), step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)), waiting_for: safe(() => waitingFor(rq), []), route: safe(() => routeOf(rq, req.user.id)) }));
   res.json({ requests });
 });
 
@@ -1728,7 +1742,7 @@ r.get('/requests/following', (req, res) => {
     JOIN users us ON us.id = r.requester_id
     WHERE t.owner_user_id = @uid OR t.created_by = @uid ORDER BY r.id DESC LIMIT 300`).all({ uid: req.user.id })
     .map(rq => ({ ...rq, step_title: stepLabelOf(rq), attachments_count: attachmentCount(rq),
-      step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)), waiting_for: safe(() => waitingFor(rq), []) }));
+      step_watch: safe(() => watchSummary(rq)), progress: safe(() => progressOf(rq)), waiting_for: safe(() => waitingFor(rq), []), route: safe(() => routeOf(rq, req.user.id)) }));
   // سازنده/پیگیرِ حداقل یک فرآیند → تبِ «پیگیری فرآیندها» همیشه دیده شود، حتی پیش از اولین درخواست
   const follows = !!db.prepare('SELECT 1 FROM workflow_templates WHERE owner_user_id = ? OR created_by = ? LIMIT 1')
     .get(req.user.id, req.user.id);
@@ -1770,7 +1784,7 @@ r.get('/requests/all', (req, res) => {
     attachments_count: attachmentCount(rq),
     step_watch: safe(() => watchSummary(rq)),
     progress: safe(() => progressOf(rq)),
-    waiting_for: safe(() => waitingFor(rq), []),
+    waiting_for: safe(() => waitingFor(rq), []), route: safe(() => routeOf(rq, req.user.id)),
   }));
   res.json({ requests, scoped: !canAccessEverywhere(u) });
 });

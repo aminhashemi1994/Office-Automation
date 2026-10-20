@@ -233,6 +233,22 @@ export default function Cartable() {
                         title="نمایش درختیِ مسیر: الان کجاست و تایید چه کسی مانده" onClick={() => openTree(r.id)}>
                         <GitBranch size={13} /> درختی
                       </button>
+                      {/* [مسیرِ گردش] کجا رفته، الان کجاست و بعد کجا می‌رود */}
+                      {r.route?.length > 1 && (
+                        <div style={{ fontSize: 11.8, marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                          {r.route.map((st, k) => (
+                            <React.Fragment key={k}>
+                              {k > 0 && <span style={{ color: 'var(--text-3)' }}>←</span>}
+                              <span style={{
+                                color: st.state === 'done' ? 'var(--green)' : st.state === 'current' ? 'var(--primary)' : 'var(--text-3)',
+                                fontWeight: st.state === 'current' ? 700 : 400,
+                              }}>
+                                {st.state === 'done' ? '✓ ' : ''}{st.title}{st.mine ? ' (شما)' : ''}
+                              </span>
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      )}
                       {/* [پیوست‌ها] نشانِ «این درخواست فایل پیوست دارد» */}
                       {r.attachments_count > 0 && (
                         <span className="badge badge-sky" style={{ marginRight: 6 }}
@@ -396,7 +412,8 @@ function groupTemplates(templates, departments) {
     (a.key === GENERAL ? 1 : 0) - (b.key === GENERAL ? 1 : 0) || a.name.localeCompare(b.name, 'fa'));
 }
 
-function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone }) {
+// [ارسال برای تایید] از صفحهٔ فرآیندها هم استفاده می‌شود (presetTplId + defaultTitle)
+export function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone, defaultTitle = '' }) {
   const { toast, settings, user, users, departments } = useStore();
   const attOff = settings?.attachments_enabled === '0'; // [پیوست‌ها] کلید سراسری
   const groups = groupTemplates(templates, departments);
@@ -410,7 +427,7 @@ function NewRequestModal({ templates, onClose, onDone, presetTplId, onModuleDone
   const group = groups.find(g => g.key === groupKey) || groups[0];
   const groupItems = group?.items || [];
   const [tplId, setTplId] = useState(presetTplId || groupItems[0]?.id || '');
-  const [title, setTitle] = useState('');
+  const [title, setTitle] = useState(defaultTitle);
   const [data, setData] = useState({});
   const [busy, setBusy] = useState(false);
   const [previewSteps, setPreviewSteps] = useState([]);

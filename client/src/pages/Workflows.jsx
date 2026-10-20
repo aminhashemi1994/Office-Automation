@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Pencil, ArrowUp, ArrowDown, Trash2, Clock, Search, Paperclip, Eye, AlertTriangle } from 'lucide-react';
+import { Plus, Pencil, ArrowUp, ArrowDown, Trash2, Clock, Search, Paperclip, Eye, AlertTriangle, Send } from 'lucide-react';
+import { NewRequestModal } from './Cartable.jsx';
 import { api } from '../api.js';
 import { useStore } from '../store.jsx';
 import { Modal, Field, UserPicker, Segmented } from '../components/common.jsx';
@@ -40,6 +41,9 @@ export default function Workflows() {
   // پیش‌فرض: فقط فرآیندهایی که خودم می‌توانم تغییرشان بدهم
   const [onlyMine, setOnlyMine] = useState(true);
   const [confirmDel, setConfirmDel] = useState(null);
+  // [ارسال برای تایید] فرآیندی که الان برای تاییدکنندگان فرستاده می‌شود
+  const [dispatch, setDispatch] = useState(null);
+  const faToday = new Intl.DateTimeFormat('fa-IR-u-ca-persian', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
   const load = async () => {
     const r = await api('/workflows/templates');
@@ -100,6 +104,10 @@ export default function Workflows() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: 6 }}>
               <b style={{ fontSize: 15 }}>{t.name}</b>
               <div style={{ display: 'flex', gap: 4 }}>
+                {!!t.is_active && (
+                  <button className="btn btn-primary btn-sm" style={{ padding: '4px 10px' }} title="همین حالا یک درخواست از این فرآیند برای تاییدکنندگان بفرست"
+                    onClick={() => setDispatch(t)}><Send size={13} /> ارسال برای تایید</button>
+                )}
                 {canManage(t) ? <>
                   <button className="icon-btn" style={{ width: 30, height: 30 }} title="ویرایش" onClick={() => setEditing(t)}><Pencil size={14} /></button>
                   <button className="icon-btn" style={{ width: 30, height: 30, color: 'var(--red)' }} title="حذف فرآیند" onClick={() => setConfirmDel(t)}><Trash2 size={14} /></button>
@@ -153,7 +161,20 @@ export default function Workflows() {
       {editing && (
         <TemplateModal tpl={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
-          onDone={() => { setEditing(null); load(); toast('ذخیره شد'); }} />
+          onDone={async (id, sendNow) => {
+            setEditing(null);
+            const r = await api('/workflows/templates').catch(() => ({ templates }));
+            setTemplates(r.templates);
+            toast('ذخیره شد');
+            // «پس از ذخیره، همین حالا برای تایید ارسال شود»
+            if (sendNow && id) { const t = r.templates.find(x => x.id === id); if (t) setDispatch(t); }
+          }} />
+      )}
+      {dispatch && (
+        <NewRequestModal templates={templates.filter(x => x.is_active)} presetTplId={dispatch.id}
+          defaultTitle={`${dispatch.name} — ${faToday}`}
+          onClose={() => setDispatch(null)}
+          onDone={() => { setDispatch(null); toast('برای تایید ارسال شد؛ در کارتابلِ تاییدکنندگان است و در «درخواست‌های من» مسیرش را می‌بینید'); }} />
       )}
       {confirmDel && (
         <Modal title="حذف فرآیند" onClose={() => setConfirmDel(null)}
@@ -327,6 +348,7 @@ function TemplateModal({ tpl, onClose, onDone }) {
     notify: tpl ? tpl.final_task_notify !== 0 : true,
   });
   const [busy, setBusy] = useState(false);
+  const [sendNow, setSendNow] = useState(false); // [ارسال برای تایید] بلافاصله پس از ذخیره
   const stepsDeadlineSum = steps.reduce((sum, s) => sum + (Number(s.deadline_hours) || 0), 0);
 
   const setStep = (i, patch) => setSteps(list => list.map((s, j) => j === i ? { ...s, ...patch } : s));
@@ -387,9 +409,10 @@ function TemplateModal({ tpl, onClose, onDone }) {
         final_task_deadline_hours: Number(finalTask.deadline_hours) || 0,
         final_task_notify: finalTask.notify,
       };
+      let id = tpl?.id;
       if (tpl) await api(`/workflows/templates/${tpl.id}`, { method: 'PUT', body });
-      else await api('/workflows/templates', { method: 'POST', body });
-      onDone();
+      else id = (await api('/workflows/templates', { method: 'POST', body })).id;
+      onDone(id, sendNow);
     } catch (e) { toast(e.message, 'error'); }
     setBusy(false);
   };
@@ -397,6 +420,10 @@ function TemplateModal({ tpl, onClose, onDone }) {
   return (
     <Modal title={tpl ? `ویرایش فرآیند «${tpl.name}»` : 'فرآیند جدید'} onClose={onClose} wide
       footer={<>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.8, marginInlineEnd: 'auto', cursor: 'pointer' }}>
+          <input type="checkbox" checked={sendNow} onChange={e => setSendNow(e.target.checked)} />
+          پس از ذخیره، همین حالا برای تایید ارسال شود
+        </label>
         <button className="btn btn-ghost" onClick={onClose}>انصراف</button>
         <button className="btn btn-primary" disabled={!name.trim() || !steps.length || busy} onClick={save}>ذخیره فرآیند</button>
       </>}>
