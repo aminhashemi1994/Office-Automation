@@ -9,7 +9,7 @@ import { notifyUsers } from '../notify.js';
 import { SIGNATURES_DIR, SHARED_FILES_DIR, UPLOADS_DIR } from '../config.js';
 import { deptManagers, deptHeads, deptDirectors, canAccessEverywhere, getManagedDeptIds, isManagementMember } from '../acl.js';
 import { activeDeputiesOf } from './delegations.js';
-import { applyLeaveDeduction } from '../leave-hook.js';
+import { applyLeaveDeduction, upgradeLeaveTemplates } from '../leave-hook.js';
 
 const r = Router();
 
@@ -1322,6 +1322,7 @@ r.post('/templates', (req, res) => {
   saveOwner(result.lastInsertRowid, { ...(req.body || {}), created_by: undefined }, req.user.id); // پیش‌فرض: خودِ سازنده
   saveQuickOptions(result.lastInsertRowid, req.body?.quick_options);
   if (req.body?.parallel_flow !== undefined) db.prepare('UPDATE workflow_templates SET parallel_flow = ? WHERE id = ?').run(req.body.parallel_flow ? 1 : 0, result.lastInsertRowid);
+  upgradeLeaveTemplates(); // [مرخصی] فرم ساده بدون نیاز به نگاشت دستی
   res.json({ id: result.lastInsertRowid });
 });
 
@@ -1361,6 +1362,7 @@ r.put('/templates/:id', (req, res) => {
     db.prepare('DELETE FROM workflow_steps WHERE template_id = ?').run(t.id);
     insertSteps(t.id, steps);
   }
+  upgradeLeaveTemplates(); // [مرخصی] فرم ساده بدون نیاز به نگاشت دستی
   res.json({ ok: true });
 });
 

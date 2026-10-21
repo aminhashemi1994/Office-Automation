@@ -8,6 +8,7 @@ import { Router } from 'express';
 import db from '../db.js';
 import { hasPerm } from '../auth.js';
 import { canAccessEverywhere, getManagedDeptIds } from '../acl.js';
+import { leaveSummary } from '../leave-hook.js';
 
 const r = Router();
 
@@ -259,14 +260,21 @@ r.get('/requests', (req, res) => {
     WHERE t.leave_enabled = 1 AND r.requester_id = ?
     ORDER BY r.id DESC LIMIT 100`).all(uid);
 
-  const steps = db.prepare('SELECT template_id, step_order, title FROM workflow_steps');
+  // [گردش فرآیند] مراحلِ هر درخواست تا کاربر ببیند کارش در کدام مرحله است.
+  // نسخهٔ اختصاصیِ درخواست (مسیر پویا) بر مراحلِ فعلیِ فرآیند مقدم است.
+  const ownSteps = db.prepare('SELECT step_order, title FROM workflow_request_steps WHERE request_id = ? ORDER BY step_order');
+  const tplSteps = db.prepare(`SELECT step_order, title FROM workflow_steps
+    WHERE template_id = (SELECT template_id FROM workflow_requests WHERE id = ?) ORDER BY step_order`);
   const requests = rows.map(r_ => {
     let map = {}; let form = {};
     try { map = JSON.parse(r_.leave_map || '{}'); } catch {}
     try { form = JSON.parse(r_.form_data || '{}'); } catch {}
     // اگر هنوز تایید نشده، مقدار از خودِ فرم خوانده می‌شود تا کاربر ببیند چقدر درخواست داده
-    const fromDate = r_.from_date || (map.from_field ? String(form[map.from_field] ?? '') : '');
-    const toDate = r_.to_date || (map.to_field ? String(form[map.to_field] ?? '') : '');
+    const sum = leaveSummary(map, form);
+    let stepList = ownSteps.all(r_.id);
+    if (!stepList.length) stepList = tplSteps.all(r_.id);
+    const isOpen = r_.status === 'in_progress';
+    const current = isOpen ? stepList.find(st => st.step_order === r_.current_step) : null;
     return {
       id: r_.id,
       title: r_.title,
@@ -275,12 +283,15 @@ r.get('/requests', (req, res) => {
       status_label: LEAVE_STATUS_FA[r_.status] || r_.status,
       created_at: r_.created_at,
       closed_at: r_.closed_at,
-      from_date: fromDate,
-      to_date: toDate,
+      from_date: r_.from_date || sum.from,
+      to_date: r_.to_date || sum.to,
       // ساعت‌ها فقط برای درخواست‌های تاییدشده قطعی است
       hours: r_.hours === null || r_.hours === undefined ? null : Math.abs(Number(r_.hours)),
-      leave_type: r_.leave_type || null,
-      amount_label: r_.amount_label || '',
+      leave_type: r_.leave_type || (sum.amount ? sum.type : null),
+      amount_label: r_.amount_label || sum.amount?.label || '',
+      steps: stepList.map(st => st.title),
+      current_step: r_.current_step,
+      current_step_title: current?.title || '',
       deducted: r_.hours !== null && r_.hours !== undefined,
     };
   });

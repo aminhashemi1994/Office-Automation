@@ -24,6 +24,7 @@ import delegationRoutes from './routes/delegations.js';
 import backupRoutes from './routes/backups.js';
 import crmRoutes from './routes/crm.js';
 import leaveRoutes from './routes/leaves.js';
+import { upgradeLeaveTemplates } from './leave-hook.js';
 import { setupSocket } from './socket.js';
 import { startReminderEngine, rescheduleExact } from './reminders.js';
 import { startBackupEngine } from './backup.js';
@@ -86,6 +87,8 @@ setupSocket(server);
 startReminderEngine();
 startBackupEngine(); // پشتیبان‌گیری خودکارِ دیتابیس (پیش‌فرض هر ۲۴ ساعت)
 startEmbeddedLivekit(); // اجرای سرور LiveKit به‌عنوان زیرفرایند (قابل‌خاموشی با LIVEKIT_EMBEDDED=0)
+
+upgradeLeaveTemplates();
 
 server.listen(config.port, config.host, () => {
   console.log(`✅ سامانه اتوماسیون روی ${config.host}:${config.port} در حال اجراست (دیتابیس: ${config.dbName}.db)`);

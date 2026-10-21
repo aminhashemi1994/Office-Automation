@@ -13,6 +13,8 @@ import { useStore } from '../store.jsx';
 import { fmtDateTime, fa } from '../utils.js';
 import { Modal, Field, UserPicker } from '../components/common.jsx';
 import Gauge, { MiniBar } from '../components/Gauge.jsx';
+import { NewRequestModal } from './Cartable.jsx';
+import { LEAVE_SCHEMA, LEAVE_MAP, isSimpleLeave } from '../components/LeaveForm.jsx';
 
 const TYPE_LABEL = { entitled: 'استحقاقی', unpaid: 'بدون حقوق', sick: 'استعلاجی' };
 const TYPE_BADGE = { entitled: 'badge-primary', unpaid: 'badge-gray', sick: 'badge-amber' };
@@ -37,7 +39,7 @@ function hoursLabel(hours, workday) {
 }
 
 export default function Leaves() {
-  const { toast, departments, user } = useStore();
+  const { toast, departments, user, users } = useStore();
   const [data, setData] = useState(null);
   const [openUser, setOpenUser] = useState(null);
   const [bulk, setBulk] = useState(null);
@@ -47,6 +49,18 @@ export default function Leaves() {
   const [search, setSearch] = useState('');
   const [deptF, setDeptF] = useState('');
   const [myReqs, setMyReqs] = useState(null); // وضعیت درخواست‌های مرخصی خودم
+  const [leaveTpls, setLeaveTpls] = useState(null); // فرآیندهای مرخصی برای فرم مستقیم
+  const [setup, setSetup] = useState(null);         // ساخت فرآیند آمادهٔ مرخصی
+
+  // فرم مرخصی همین‌جا باز می‌شود؛ لازم نیست کاربر در کارتابل دنبال فرآیندش بگردد
+  const openNewLeave = async () => {
+    try {
+      const t = await api('/workflows/templates');
+      const list = t.templates.filter(x => x.is_active && x.leave_enabled);
+      if (!list.length) return toast('فرآیند مرخصی فعالی برای شما در دسترس نیست', 'error');
+      setLeaveTpls(list);
+    } catch (e) { toast(e.message, 'error'); }
+  };
 
   const load = async () => {
     try { setData(await api('/leaves/balances')); }
@@ -87,6 +101,11 @@ export default function Leaves() {
         </div>
         {data.can_manage && (
           <div style={{ display: 'flex', gap: 8 }}>
+            {myReqs && !myReqs.templates.length && (
+              <button className="btn btn-ghost" onClick={() => setSetup(guessSetup(departments, users))}>
+                <Plus size={16} /> ساخت فرآیند آمادهٔ مرخصی
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={() => setConfig({
               workday_hours: wd, default_days: data.default_days, policy: { ...data.policy },
             })}><Settings2 size={16} /> تنظیمات مرخصی</button>
@@ -197,9 +216,9 @@ export default function Leaves() {
               )}
             </b>
             {myReqs.templates.length > 0 && (
-              <Link to="/cartable" className="btn btn-primary btn-sm">
+              <button className="btn btn-primary btn-sm" onClick={openNewLeave}>
                 <Plus size={14} /> درخواست مرخصی جدید
-              </Link>
+              </button>
             )}
           </div>
           <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 10px', lineHeight: 1.9 }}>
@@ -238,6 +257,7 @@ export default function Leaves() {
                         <span className="badge badge-amber" style={{ marginRight: 5 }}
                           title="تایید شده ولی مقدارِ مرخصی از فرم قابل تشخیص نبود">از مانده کم نشد</span>
                       )}
+                      <StageTrack rq={rq} />
                     </td>
                     <td style={{ fontSize: 12.3, color: 'var(--text-3)' }}>{fmtDateTime(rq.created_at)}</td>
                   </tr>
@@ -345,6 +365,13 @@ export default function Leaves() {
       {setLimit && <LimitModal value={setLimit} setValue={setSetLimit} onDone={load} />}
       {manual && <ManualModal value={manual} setValue={setManual} onDone={load} />}
       {config && <ConfigModal value={config} setValue={setConfig} onDone={load} />}
+      {setup && <SetupModal value={setup} setValue={setSetup} onDone={load} />}
+      {leaveTpls && (
+        <NewRequestModal templates={leaveTpls}
+          presetTplId={(leaveTpls.find(isSimpleLeave) || leaveTpls[0]).id}
+          onClose={() => setLeaveTpls(null)}
+          onDone={() => { setLeaveTpls(null); load(); toast('درخواست مرخصی شما ارسال شد'); }} />
+      )}
     </div>
   );
 }
@@ -541,6 +568,107 @@ function ConfigModal({ value, setValue, onDone }) {
             </label>
           ))}
         </div>
+      </Field>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------- گردش فرآیند
+// هر مرحله یک نقطه: گذشته پر، جاری برجسته، بعدی کم‌رنگ — و نامِ مرحلهٔ جاری به متن
+function StageTrack({ rq }) {
+  const steps = rq.steps || [];
+  if (!steps.length || ['cancelled'].includes(rq.status)) return null;
+  const done = (i) => rq.status === 'approved' || rq.status === 'awaiting_requester' || i + 1 < rq.current_step;
+  const current = (i) => rq.status === 'in_progress' && i + 1 === rq.current_step;
+  const failed = (i) => rq.status === 'rejected' && i + 1 === rq.current_step;
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        {steps.map((t, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && <span style={{ width: 14, height: 2, background: done(i) || current(i) ? 'var(--primary)' : 'var(--border-soft)' }} />}
+            <span title={t} style={{
+              width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+              background: failed(i) ? 'var(--red)' : done(i) ? 'var(--primary)' : 'transparent',
+              border: `2px solid ${failed(i) ? 'var(--red)' : done(i) || current(i) ? 'var(--primary)' : 'var(--border-soft)'}`,
+              boxShadow: current(i) ? '0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent)' : 'none',
+            }} />
+          </React.Fragment>
+        ))}
+      </div>
+      {rq.current_step_title && (
+        <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 4 }}>
+          مرحلهٔ {fa(rq.current_step)} از {fa(steps.length)}: {rq.current_step_title}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- فرآیند آمادهٔ مرخصی
+// واحد اداری و مدیر عامل از روی نام واحد و سِمَت حدس زده می‌شوند تا فقط «ساخت» زدن کافی باشد
+function guessSetup(departments = [], users = []) {
+  const dept = departments.find(d => /اداری|منابع\s*انسانی|کارگزینی|پرسنلی/.test(d.name || ''));
+  const ceo = users.find(u => u.is_active && /مدیر\s*عامل|مدیرعامل/.test(u.position || ''));
+  return { admin_dept_id: dept ? String(dept.id) : '', admin_user_id: '', ceo_id: ceo ? String(ceo.id) : '' };
+}
+
+// مسیر طبق خواستهٔ واحد اداری: مدیر بخش ← واحد اداری ← مدیر عامل
+function SetupModal({ value, setValue, onDone }) {
+  const { toast, departments, users } = useStore();
+  const [busy, setBusy] = useState(false);
+  const set = (patch) => setValue(v => ({ ...v, ...patch }));
+  const active = (users || []).filter(u => u.is_active);
+  const ok = value.ceo_id && (value.admin_user_id || value.admin_dept_id);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api('/workflows/templates', { method: 'POST', body: {
+        name: 'درخواست مرخصی',
+        description: 'درخواست مرخصی ساعتی یا روزانه. پس از تایید مدیر بخش، واحد اداری و مدیر عامل، از ماندهٔ مرخصی شما کم می‌شود.',
+        form_schema: LEAVE_SCHEMA,
+        steps: [
+          { title: 'تایید مدیر بخش', approver_type: 'requester_manager' },
+          value.admin_user_id
+            ? { title: 'بررسی واحد اداری', approver_type: 'user', approver_id: Number(value.admin_user_id) }
+            : { title: 'بررسی واحد اداری', approver_type: 'dept_manager', approver_id: Number(value.admin_dept_id) },
+          { title: 'تایید مدیر عامل', approver_type: 'user', approver_id: Number(value.ceo_id) },
+        ],
+        leave_enabled: 1, leave_map: LEAVE_MAP, past_days_limit: 14, scope_dept_ids: [],
+        owner_dept_id: value.admin_dept_id ? Number(value.admin_dept_id) : undefined,
+      } });
+      setValue(null); onDone(); toast('فرآیند «درخواست مرخصی» ساخته شد');
+    } catch (e) { toast(e.message, 'error'); }
+    setBusy(false);
+  };
+  return (
+    <Modal title="ساخت فرآیند آمادهٔ مرخصی" onClose={() => setValue(null)}
+      footer={<>
+        <button className="btn btn-ghost" onClick={() => setValue(null)}>انصراف</button>
+        <button className="btn btn-primary" disabled={busy || !ok} onClick={save}>ساخت فرآیند</button>
+      </>}>
+      <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 12px', lineHeight: 1.9 }}>
+        درخواست به‌ترتیب پیشِ <b>مدیر بخشِ درخواست‌دهنده</b>، <b>واحد اداری</b> و <b>مدیر عامل</b> می‌رود
+        و پس از تایید نهایی از ماندهٔ مرخصی کم می‌شود. بعداً از صفحهٔ «فرآیندها» قابل ویرایش است.
+      </p>
+      <Field label="واحد اداری">
+        <select className="input" value={value.admin_dept_id} onChange={e => set({ admin_dept_id: e.target.value })}>
+          <option value="">— انتخاب واحد —</option>
+          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+      </Field>
+      <Field label="مسئول بررسی در واحد اداری (اختیاری)" hint="اگر انتخاب نکنید، مدیر همان واحد بررسی می‌کند.">
+        <select className="input" value={value.admin_user_id} onChange={e => set({ admin_user_id: e.target.value })}>
+          <option value="">— مدیر واحد اداری —</option>
+          {active.filter(u => !value.admin_dept_id || String(u.department_id) === String(value.admin_dept_id))
+            .map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+        </select>
+      </Field>
+      <Field label="مدیر عامل">
+        <select className="input" value={value.ceo_id} onChange={e => set({ ceo_id: e.target.value })}>
+          <option value="">— انتخاب —</option>
+          {active.map(u => <option key={u.id} value={u.id}>{u.full_name}{u.position ? ` (${u.position})` : ''}</option>)}
+        </select>
       </Field>
     </Modal>
   );

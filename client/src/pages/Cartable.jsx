@@ -8,6 +8,7 @@ import { Modal, Field, Avatar, MySignature } from '../components/common.jsx';
 import { AttachmentList, AttachmentPicker, toFileIds as toIds } from '../components/Attachments.jsx';
 import RequestFormFields, { validateRequestForm } from '../components/RequestForm.jsx';
 import WorkflowTree, { MiniProgress } from '../components/WorkflowTree.jsx';
+import LeaveFormFields, { isSimpleLeave, parseLeaveMap, leaveKeys, validateLeaveForm, leaveTitle } from '../components/LeaveForm.jsx';
 
 export const STATUS = {
   in_progress: ['در جریان', 'badge-primary'],
@@ -466,6 +467,14 @@ export function NewRequestModal({ templates, onClose, onDone, presetTplId, onMod
   let schema = [];
   try { schema = JSON.parse(tpl?.form_schema || '[]'); } catch {}
   const pastDays = Number(tpl?.past_days_limit) || 0;
+  // [مرخصی] فرآیند مرخصی فرم سادهٔ خودش را دارد؛ بقیهٔ گزینه‌ها در کشوی «گزینه‌های بیشتر» جمع می‌شوند
+  // تا همهٔ پرسنل بدون گیج‌شدن درخواست بدهند.
+  const simpleLeave = isSimpleLeave(tpl);
+  const leaveMap = simpleLeave ? parseLeaveMap(tpl) : null;
+  // فیلدهای legacy فیلدهای مرخصیِ قبل از ارتقای خودکارند و دیگر پرسیده نمی‌شوند
+  const extraSchema = simpleLeave ? schema.filter(f => !f.legacy && !leaveKeys(leaveMap).includes(f.key)) : schema;
+  const reqTitle = simpleLeave && !title.trim() ? leaveTitle(leaveMap, data) : title;
+  const More = simpleLeave ? LeaveMoreDrawer : React.Fragment;
 
   // با عوض‌شدن واحد، اولین فرآیندِ همان واحد انتخاب می‌شود
   const pickGroup = (key) => {
@@ -489,7 +498,8 @@ export function NewRequestModal({ templates, onClose, onDone, presetTplId, onMod
   }, [tplId]);
 
   const submit = async () => {
-    const err = validateRequestForm(schema, data, { attachmentsOff: attOff, pastDays });
+    const err = (simpleLeave && validateLeaveForm(leaveMap, data))
+      || validateRequestForm(extraSchema, data, { attachmentsOff: attOff, pastDays });
     if (err) return toast(err, 'error');
     if (Number(tpl?.cc_mode) === 2 && !cc.length) return toast('برای این فرآیند انتخاب حداقل یک گیرندهٔ رونوشت الزامی است', 'error');
     // مرحلهٔ پویا باید تاییدکننده داشته باشد، وگرنه درخواست روی هوا می‌ماند
@@ -503,7 +513,7 @@ export function NewRequestModal({ templates, onClose, onDone, presetTplId, onMod
     setBusy(true);
     try {
       const r = await api('/workflows/requests', { method: 'POST', body: {
-        template_id: tpl.id, title, form_data: data,
+        template_id: tpl.id, title: reqTitle, form_data: data,
         attachments: toIds(attachments),
         on_behalf_id: onBehalfId ? Number(onBehalfId) : null,
         on_behalf_name: onBehalfId ? '' : onBehalfName,
@@ -524,7 +534,9 @@ export function NewRequestModal({ templates, onClose, onDone, presetTplId, onMod
             <Check size={16} /> {tpl?.requester_signature !== 0 ? 'ثبت و امضا' : 'ثبت'}
           </button>
         ) : (
-          <button className="btn btn-primary" disabled={!tpl || !title.trim() || busy} onClick={submit}>ثبت درخواست</button>
+          <button className="btn btn-primary" disabled={!tpl || !reqTitle.trim() || busy} onClick={submit}>
+            {simpleLeave ? 'ارسال به واحد اداری' : 'ثبت درخواست'}
+          </button>
         )}
       </>}>
       {/* اول واحد، بعد فرآیندهای همان واحد — فهرست بلندِ همهٔ فرآیندها گیج‌کننده بود */}
@@ -594,6 +606,11 @@ export function NewRequestModal({ templates, onClose, onDone, presetTplId, onMod
         ) : null}
       </div>
 
+      {simpleLeave && <LeaveFormFields map={leaveMap} data={data} onChange={setData} pastDays={pastDays} />}
+      {/* فیلدهای الزامیِ اضافه نباید در کشوی بسته پنهان بمانند */}
+      {simpleLeave && <RequestFormFields schema={extraSchema.filter(f => f.required)} data={data} onChange={setData} pastDays={pastDays} />}
+
+      <More>
       {/* [ثبت به نمایندگی] فقط اگر در تعریف فرآیند فعال شده باشد */}
       {!!tpl?.allow_on_behalf && (
         <Field label="این درخواست از طرفِ چه کسی است؟ (اختیاری)"
@@ -616,16 +633,17 @@ export function NewRequestModal({ templates, onClose, onDone, presetTplId, onMod
           <AttachmentList ids={atts} thumb={96} title="فایل‌های راهنمای این فرآیند" />
         </div>
       ) : null; })()}
-      <Field label="عنوان درخواست">
+      <Field label={simpleLeave ? 'عنوان درخواست (اختیاری)' : 'عنوان درخواست'}>
         <input className="input" value={title} onChange={e => setTitle(e.target.value)}
-          placeholder={tpl?.title_placeholder || 'مثلاً: خرید ۵۰ کیلوگرم مس'} />
+          placeholder={simpleLeave ? leaveTitle(leaveMap, data) : (tpl?.title_placeholder || 'مثلاً: خرید ۵۰ کیلوگرم مس')} />
       </Field>
-      {pastDays > 0 && schema.some(f => f.type === 'date') && (
+      {!simpleLeave && pastDays > 0 && schema.some(f => f.type === 'date') && (
         <p style={{ fontSize: 12.3, color: 'var(--text-2)', margin: '-4px 0 12px' }}>
           برای این فرآیند می‌توانید تا {pastDays.toLocaleString('fa-IR')} روزِ گذشته هم تاریخ انتخاب کنید.
         </p>
       )}
-      <RequestFormFields schema={schema} data={data} onChange={setData} pastDays={pastDays} />
+      <RequestFormFields schema={simpleLeave ? extraSchema.filter(f => !f.required) : extraSchema}
+        data={data} onChange={setData} pastDays={pastDays} />
 
       {/* [پیوست عمومی] مستقل از فیلدهای فرم — همیشه می‌شود PDF/اسکن/عکس گذاشت */}
       {!attOff && tpl?.allow_attachments !== 0 && (
@@ -763,6 +781,7 @@ export function NewRequestModal({ templates, onClose, onDone, presetTplId, onMod
           </select>
         </Field>
       )}
+      </More>
       {/* پیش‌نمایشِ مسیر تایید — عمداً پایینِ فرم است: «قبل از ثبت ببین کجا می‌رود» */}
       {tpl && (
         <div className="card-pad panel-soft" style={{ marginTop: 4 }}>
@@ -799,6 +818,16 @@ export function NewRequestModal({ templates, onClose, onDone, presetTplId, onMod
         )}
       </>)}
     </Modal>
+  );
+}
+
+// [مرخصی] کشوی بسته‌شده — گزینه‌هایی که بیشترِ پرسنل لازم ندارند، پیش‌فرض پنهان‌اند
+function LeaveMoreDrawer({ children }) {
+  return (
+    <details className="leave-more">
+      <summary>گزینه‌های بیشتر (عنوان، پیوست، رونوشت، …)</summary>
+      <div className="leave-more-body">{children}</div>
+    </details>
   );
 }
 

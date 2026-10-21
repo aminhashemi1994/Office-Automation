@@ -1107,3 +1107,9 @@ label:has(> input[type="checkbox"]:disabled):hover { background: transparent; }
 /* [جابه‌جایی وظایف] ستونی که کارت روی آن کشیده می‌شود */
 .kanban-col.drag-over { outline: 2px dashed var(--primary); outline-offset: -4px; background: var(--primary-soft); }
 .task-card[draggable] { cursor: grab; }
+
+/* [مرخصی] کشوی «گزینه‌های بیشتر» در فرم سادهٔ مرخصی */
+.leave-more { border: 1px solid var(--border-soft); border-radius: 10px; margin-bottom: 14px; }
+.leave-more > summary { cursor: pointer; padding: 10px 14px; font-size: 12.8px; color: var(--text-2); user-select: none; }
+.leave-more[open] > summary { border-bottom: 1px solid var(--border-soft); }
+.leave-more-body { padding: 14px 14px 0; }

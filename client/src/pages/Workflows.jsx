@@ -581,6 +581,19 @@ function TemplateModal({ tpl, onClose, onDone }) {
                 <option value="sick">استعلاجی</option>
               </select>
             </Field>
+            <Field label="فیلدِ «ساعتی / روزانه»"
+              hint="با انتخاب این فیلد، فرم سادهٔ مرخصی به کاربر نشان داده می‌شود و بقیهٔ گزینه‌ها در کشو پنهان می‌شوند.">
+              <FieldPicker fields={fields} value={leaveMap.mode_field} types={['select', 'text']}
+                onChange={v => setLeaveMap(m => ({ ...m, mode_field: v }))} />
+            </Field>
+            <Field label="فیلدِ «توضیح مرخصی»">
+              <FieldPicker fields={fields} value={leaveMap.desc_field} types={['textarea', 'text']}
+                onChange={v => setLeaveMap(m => ({ ...m, desc_field: v }))} />
+            </Field>
+            <Field label="فیلدِ «تاریخ» (مرخصی ساعتی)">
+              <FieldPicker fields={fields} value={leaveMap.date_field} types={['date', 'text']}
+                onChange={v => setLeaveMap(m => ({ ...m, date_field: v }))} />
+            </Field>
             <Field label="فیلدِ «بازهٔ ساعتی» (مرخصی ساعتی)">
               <FieldPicker fields={fields} value={leaveMap.range_field} types={['time_range']}
                 onChange={v => setLeaveMap(m => ({ ...m, range_field: v }))} />
